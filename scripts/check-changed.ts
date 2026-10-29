@@ -12,14 +12,25 @@
 //
 // Uncommitted and untracked files count. Affected packages come from
 // .github/scripts/ci-changes.cjs, the same mapping CI uses to gate its jobs.
-// The steps run side by side; each prints its output when it finishes. A
-// rerun on exactly the files of the last passing run prints that run's summary.
+// The steps run side by side, as many at once as the machine's cores and
+// available memory allow (CHECK_CHANGED_CONCURRENCY overrides; 1 runs them one
+// by one), and each prints its output when it finishes. A step running past
+// CHECK_CHANGED_TIMEOUT seconds (default 900) is killed with its process tree
+// and reported as TIMEOUT. A rerun on exactly the files of the last passing run
+// prints that run's summary.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import { decide, readWorkspace } from "../.github/scripts/ci-changes.cjs";
+import {
+  awaitStep,
+  createLimiter,
+  defaultConcurrency,
+  positiveInteger,
+  type StepOutcome,
+} from "./lib/check-changed-steps.ts";
 
 const root = NodePath.resolve(import.meta.dirname, "..");
 const CODE = /\.[cm]?[jt]sx?$/;
@@ -245,7 +256,7 @@ const checkPatches = (): boolean => {
     const { status, stdout, stderr, error } = NodeChildProcess.spawnSync(
       "vp",
       ["install", "--lockfile-only", "--ignore-scripts"],
-      { cwd: temp, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+      { cwd: temp, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, timeout: timeoutSeconds * 1000 },
     );
     if (status === 0) return true;
     if (stdout) console.log(stdout);
@@ -270,6 +281,18 @@ const graphql = ["apps/server", "packages/source-control-github"].filter((dir) =
   files.some((file) => file.startsWith(`${dir}/`)),
 );
 
+// oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone script has no Effect runtime.
+const platform = process.platform;
+// The typecheck step gets the same budget for its own package runs. macOS
+// counts its file cache as used, so freemem() there would starve a large Mac.
+const concurrency =
+  positiveInteger(process.env.CHECK_CHANGED_CONCURRENCY) ??
+  defaultConcurrency(
+    NodeOS.availableParallelism(),
+    platform === "darwin" ? NodeOS.totalmem() : NodeOS.freemem(),
+  );
+const timeoutSeconds = positiveInteger(process.env.CHECK_CHANGED_TIMEOUT) ?? 900;
+
 const filters = (names: ReadonlyArray<string>) => names.flatMap((name) => ["--filter", name]);
 const steps = [
   // Runs first; it takes about a second.
@@ -293,7 +316,7 @@ const steps = [
       "--cache",
       "--parallel",
       "--concurrency-limit",
-      "4",
+      String(concurrency),
       ...filters(affected),
       "typecheck",
     ],
@@ -308,34 +331,59 @@ const steps = [
 
 // Output is piped, so keep the colors a terminal would get.
 const env = process.stdout.isTTY ? { ...process.env, FORCE_COLOR: "1" } : process.env;
-const runStep = (step: (typeof steps)[number]) =>
-  new Promise<{ name: string; ok: boolean; seconds: string }>((resolve) => {
-    const started = performance.now();
-    const finish = (ok: boolean, output?: Buffer) => {
-      const seconds = ((performance.now() - started) / 1000).toFixed(1);
-      console.log(`\n> vp ${step.name}  ${ok ? "pass" : "FAIL"}  ${seconds}s`);
-      if (output) process.stdout.write(output);
-      resolve({ name: step.name, ok, seconds });
-    };
-    // In-process steps print their own output. The patch check is first and
-    // takes about a second, so the commands start right after it.
-    if ("run" in step) return finish(step.run());
-    const output: Array<Buffer> = [];
-    const child = NodeChildProcess.spawn("vp", step.args, { cwd: root, env });
-    child.stdout.on("data", (chunk: Buffer) => output.push(chunk));
-    child.stderr.on("data", (chunk: Buffer) => output.push(chunk));
-    // A failed spawn emits "error", then "close" with a nonzero code.
-    child.on("error", (error) => output.push(Buffer.from(`${error.message}\n`)));
-    child.on("close", (status) => finish(status === 0, Buffer.concat(output)));
+// Each command leads its own process group so a timeout can kill the workers it
+// started. That also hides Ctrl-C from them, so kill them on it. Windows has no
+// process groups; taskkill /t walks the tree instead.
+const windows = platform === "win32";
+const running = new Set<NodeChildProcess.ChildProcess>();
+const killTree = (child: NodeChildProcess.ChildProcess) => {
+  if (child.pid === undefined) return;
+  try {
+    if (windows) {
+      NodeChildProcess.spawnSync("taskkill", ["/pid", String(child.pid), "/t", "/f"]);
+    } else {
+      process.kill(-child.pid, "SIGKILL");
+    }
+  } catch {
+    // Already gone.
+  }
+};
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  process.on(signal, () => {
+    for (const child of running) killTree(child);
+    process.exit(signal === "SIGINT" ? 130 : 143);
   });
+}
+const runStep = async (step: (typeof steps)[number]) => {
+  const started = performance.now();
+  const finish = (outcome: StepOutcome, output?: Buffer) => {
+    const time =
+      outcome === "TIMEOUT"
+        ? `killed after ${timeoutSeconds}s`
+        : `${((performance.now() - started) / 1000).toFixed(1)}s`;
+    console.log(`\n> vp ${step.name}  ${outcome}  ${time}`);
+    if (output) process.stdout.write(output);
+    return { name: step.name, outcome, time };
+  };
+  // In-process steps print their own output. The patch check is first and
+  // takes about a second, so the commands start right after it.
+  if ("run" in step) return finish(step.run() ? "pass" : "FAIL");
+  const child = NodeChildProcess.spawn("vp", step.args, { cwd: root, env, detached: !windows });
+  running.add(child);
+  const { outcome, output } = await awaitStep(child, timeoutSeconds * 1000, () => killTree(child));
+  running.delete(child);
+  return finish(outcome, output);
+};
+
+const limit = createLimiter(concurrency);
 
 // Vitest runs started together race to rebuild node_modules/.vitest-cache after
 // an install (ENOTEMPTY), so they run one after another.
 let previousVitest: Promise<unknown> = Promise.resolve();
 const results = await Promise.all(
   steps.map((step) => {
-    if (!("args" in step) || step.args[0] !== "test") return runStep(step);
-    const result = previousVitest.then(() => runStep(step));
+    if (!("args" in step) || step.args[0] !== "test") return limit(() => runStep(step));
+    const result = previousVitest.then(() => limit(() => runStep(step)));
     previousVitest = result;
     return result;
   }),
@@ -343,7 +391,13 @@ const results = await Promise.all(
 
 const summary = ["check:changed summary"];
 for (const result of results) {
-  summary.push(`  ${result.ok ? "pass" : "FAIL"}  ${result.name}  ${result.seconds}s`);
+  summary.push(`  ${result.outcome}  ${result.name}  ${result.time}`);
+}
+if (results.some((result) => result.outcome === "TIMEOUT")) {
+  summary.push(
+    `  TIMEOUT: ran past CHECK_CHANGED_TIMEOUT=${timeoutSeconds}s and was killed; this is not ` +
+      "a check failure. Raise CHECK_CHANGED_TIMEOUT or lower CHECK_CHANGED_CONCURRENCY.",
+  );
 }
 const ciOnly = Object.entries({
   "full test suites": outputs.test || outputs.test_web || outputs.test_server,
@@ -358,7 +412,7 @@ if (!runKnip) summary.push("  knip skipped: no code or manifest changed");
 console.log(`\n${summary.join("\n")}`);
 // exitCode, not exit(): piped stdout is asynchronous on macOS, and exit()
 // would cut off a failing step's output.
-if (results.some((result) => !result.ok)) {
+if (results.some((result) => result.outcome !== "pass")) {
   process.exitCode = 1;
 } else if (inputKey() !== key) {
   console.log("  pass not cached: files changed during the run");

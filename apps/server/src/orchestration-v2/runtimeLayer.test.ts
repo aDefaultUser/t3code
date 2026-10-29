@@ -4768,6 +4768,172 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
       }),
   );
 
+  it.effect("releases held agent messages once a later run completes, not the user's", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const eventSink = yield* EventSink.EventSinkV2;
+      const threadId = ThreadId.make("runtime-layer-failed-queue-agent-messages");
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make(`${threadId}:create`),
+        threadId,
+        projectId: ProjectId.make(`${threadId}:project`),
+        title: "Dispatcher",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: process.cwd(),
+      });
+      const send = (key: string, createdBy: "user" | "agent", start: boolean) =>
+        orchestrator.dispatch({
+          type: "message.dispatch",
+          createdBy,
+          creationSource: createdBy === "user" ? "web" : "server",
+          commandId: CommandId.make(`${threadId}:message:${key}`),
+          threadId,
+          messageId: MessageId.make(`${threadId}:message:${key}`),
+          text: key,
+          attachments: [],
+          modelSelection,
+          dispatchMode: { type: start ? "start_immediately" : "queue_after_active" },
+        });
+      const runFor = (key: string) =>
+        Effect.map(orchestrator.getThreadProjection(threadId), ({ runs }) => {
+          const run = runs.find(
+            (candidate) => candidate.userMessageId === MessageId.make(`${threadId}:message:${key}`),
+          );
+          assert.isDefined(run);
+          return run;
+        });
+      yield* send("active", "agent", true);
+      yield* send("issue", "agent", false);
+      yield* send("user", "user", false);
+      const startedRunIds = yield* Queue.unbounded<RunId>();
+      yield* eventSink
+        .stream({ threadId, afterSequence: yield* orchestrator.getThreadEventSequence(threadId) })
+        .pipe(
+          Stream.runForEach((stored) =>
+            stored.event.type === "run.updated" && stored.event.payload.status === "starting"
+              ? Queue.offer(startedRunIds, stored.event.payload.id)
+              : Effect.void,
+          ),
+          Effect.forkScoped,
+        );
+      yield* Effect.yieldNow;
+      const end = (key: string, status: "completed" | "failed") =>
+        Effect.gen(function* () {
+          const run = yield* runFor(key);
+          assert.isNotNull(run.rootNodeId);
+          const now = yield* DateTime.now;
+          yield* eventSink.write({
+            events: [
+              ...(status === "failed"
+                ? [
+                    {
+                      id: EventId.make(`${threadId}:${key}:error`),
+                      type: "turn-item.updated" as const,
+                      threadId,
+                      runId: run.id,
+                      nodeId: run.rootNodeId,
+                      providerInstanceId: run.providerInstanceId,
+                      occurredAt: now,
+                      payload: {
+                        id: TurnItemId.make(`${threadId}:${key}:error`),
+                        type: "error" as const,
+                        threadId,
+                        runId: run.id,
+                        nodeId: run.rootNodeId,
+                        providerThreadId: run.providerThreadId,
+                        providerTurnId: null,
+                        nativeItemRef: null,
+                        parentItemId: null,
+                        ordinal: 2,
+                        status: "failed" as const,
+                        title: "Provider failure",
+                        startedAt: now,
+                        completedAt: now,
+                        updatedAt: now,
+                        failure: {
+                          class: "provider_error" as const,
+                          message: "Provider failed.",
+                          code: "provider_failed",
+                          retryable: null,
+                        },
+                      },
+                    },
+                  ]
+                : []),
+              {
+                id: EventId.make(`${threadId}:${key}:${status}`),
+                type: "run.updated",
+                threadId,
+                runId: run.id,
+                nodeId: run.rootNodeId,
+                providerInstanceId: run.providerInstanceId,
+                occurredAt: now,
+                payload: { ...run, status, startedAt: now, completedAt: now },
+              },
+            ],
+          });
+        });
+
+      yield* end("active", "failed");
+      assert.isTrue((yield* runFor("issue")).queueHeld);
+      // A scheduled tick finds the thread idle and starts past the held queue.
+      yield* send("tick", "agent", true);
+      assert.equal((yield* runFor("tick")).status, "starting");
+      yield* end("tick", "completed");
+      assert.equal(yield* Queue.take(startedRunIds), (yield* runFor("issue")).id);
+      const user = yield* runFor("user");
+      assert.equal(user.status, "queued");
+      assert.isTrue(user.queueHeld);
+
+      // A run that finishes despite a stop request does not release what the stop held.
+      yield* send("after-stop", "agent", false);
+      assert.isTrue((yield* runFor("after-stop")).queueHeld);
+      const issue = yield* runFor("issue");
+      assert.isNotNull(issue.rootNodeId);
+      const now = yield* DateTime.now;
+      yield* eventSink.write({
+        events: [
+          {
+            id: EventId.make(`${threadId}:issue:interrupt-request`),
+            type: "turn-item.updated",
+            threadId,
+            runId: issue.id,
+            nodeId: issue.rootNodeId,
+            providerInstanceId: issue.providerInstanceId,
+            occurredAt: now,
+            payload: {
+              id: TurnItemId.make(`${threadId}:issue:interrupt-request`),
+              type: "run_interrupt_request",
+              threadId,
+              runId: issue.id,
+              nodeId: issue.rootNodeId,
+              providerThreadId: issue.providerThreadId,
+              providerTurnId: null,
+              nativeItemRef: null,
+              parentItemId: null,
+              ordinal: 2,
+              status: "completed",
+              title: "Interrupt requested",
+              startedAt: now,
+              completedAt: now,
+              updatedAt: now,
+              message: "Stopped by user",
+            },
+          },
+        ],
+      });
+      yield* end("issue", "completed");
+      yield* orchestrator.resumeQueuedRuns;
+      assert.isTrue((yield* runFor("after-stop")).queueHeld);
+    }),
+  );
+
   it.effect("keeps queued user selections and pauses only the limited provider", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -5372,9 +5538,10 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         after.runs.find((run) => run.id === held.id),
         held,
       );
+      // Nobody will resume a server message, so the completed run released it behind the wake.
       assert.deepEqual(
         after.runs.find((run) => run.id === textContinuation.id),
-        textContinuation,
+        { ...textContinuation, queueHeld: false },
       );
     }),
   );
@@ -5714,7 +5881,7 @@ it.layer(layerTest)("snooze queued runs", (it) => {
             payload:
               run.status === "queued"
                 ? { ...run, queueHeld: true }
-                : { ...run, status: "completed" as const, completedAt: now },
+                : { ...run, status: "cancelled" as const, completedAt: now },
           })),
           effects: [],
         });

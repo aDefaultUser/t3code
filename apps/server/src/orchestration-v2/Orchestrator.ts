@@ -2195,6 +2195,44 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ),
   );
 
+  // A hold waits for a person to review what they queued. Nobody reviews messages from agents,
+  // the server or scheduled tasks, so a later completed run releases those unless it was stopped.
+  const releaseUnattendedHolds = Effect.fn("Orchestrator.releaseUnattendedHolds")(function* (
+    threadId: ThreadId,
+    completedRunId: RunId,
+  ) {
+    const held = yield* projectionStore.getHeldQueuedRuns(threadId);
+    if (held.length === 0) return;
+    const { messages, turnItems } = yield* projectionStore.getThreadRecords(
+      threadId,
+      ["messages", "turnItems"],
+      {
+        messageIds: held.map((run) => run.userMessageId),
+        turnItemTypes: ["run_interrupt_request"],
+        turnItemRunIds: [completedRunId],
+      },
+    );
+    if (turnItems.length > 0) return;
+    const unattended = new Set(
+      messages
+        .filter((message) => message.createdBy !== "user" || message.scheduledTaskId !== undefined)
+        .map((message) => message.id),
+    );
+    const now = yield* DateTime.now;
+    const released = held.filter((run) => unattended.has(run.userMessageId));
+    if (released.length === 0) return;
+    yield* writeSystemEvents(
+      released.map((run) => ({
+        type: "run.updated" as const,
+        threadId,
+        runId: run.id,
+        providerInstanceId: run.providerInstanceId,
+        occurredAt: now,
+        payload: { ...run, queueHeld: false },
+      })),
+    );
+  });
+
   const resumeQueuedRuns = Effect.gen(function* () {
     const threadIds = yield* projectionStore.getRecoveryThreadIds("queued-runs");
     let resumed = 0;
@@ -13083,10 +13121,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         yield* threadDispatch
           .withLock(
             threadId,
-            startNextQueuedRun(threadId, {
-              endedRunId: run.id,
-              ...(run.status === "failed" ? { failedRunId: run.id } : {}),
-            }),
+            (run.status === "completed"
+              ? releaseUnattendedHolds(threadId, run.id)
+              : Effect.void
+            ).pipe(
+              Effect.andThen(
+                startNextQueuedRun(threadId, {
+                  endedRunId: run.id,
+                  ...(run.status === "failed" ? { failedRunId: run.id } : {}),
+                }),
+              ),
+            ),
           )
           .pipe(
             Effect.catchCause((cause) =>

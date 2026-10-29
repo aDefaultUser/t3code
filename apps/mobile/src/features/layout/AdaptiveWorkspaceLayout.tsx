@@ -939,6 +939,7 @@ function AdaptiveWorkspaceLayoutContent(
           panes={panes}
           renderInspector={workspaceInspector?.render}
           setAuxiliaryPaneWidth={setFileInspectorPreferredWidth}
+          onClose={() => setFileInspectorPreferredVisible(false)}
           onClosed={handleWorkspaceInspectorClosed}
         />
       </PaneContext>

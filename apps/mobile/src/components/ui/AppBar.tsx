@@ -1,15 +1,16 @@
 import { Toolbar } from "./Toolbar";
 import { AppActivityIndicator } from "./AppActivityIndicator";
 import type { HeaderBarButtonMailSearchToolbarItem } from "react-native-screens";
-import { useId } from "react";
+import { use, useId, useLayoutEffect } from "react";
 import { View } from "react-native";
 import { createNativeHeaderMenu } from "./nativeHeaderMenu.ios";
 import { ScreenHeaderButton } from "./ScreenHeaderButton";
-import { NativeStackScreenOptions } from "../../native/StackHeader";
+import { NativeStackScreenOptions, useScreenOptionsWriter } from "../../native/StackHeader";
 import { useNativeWorkspaceColumnsSupported } from "../../native/NativeWorkspaceColumns";
 import { useDeviceType } from "../../native/native-layout-metrics";
 import { useAdaptiveWorkspaceLayout } from "../../features/layout/AdaptiveWorkspaceLayout";
 import { useSidebarToggle } from "../../features/layout/useSidebarToggle";
+import { InspectorCloseContext } from "../../features/layout/inspector-bar-store";
 import {
   createNativeMailSearchToolbarItem,
   NATIVE_MAIL_SEARCH_TOOLBAR_SUPPORTED,
@@ -44,6 +45,15 @@ export function AppBar(props: AppBarProps) {
   const headerId = useId();
   const { layout } = useAdaptiveWorkspaceLayout();
   const sidebarToggle = useSidebarToggle();
+  const closeInspector = use(InspectorCloseContext);
+  const setOptions = useScreenOptionsWriter();
+  const ownsInspectorBar = closeInspector !== null && !props.embedded && !props.sheet;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- an inspector pane that stops drawing its bar must not leave it in the out-of-tree inspector bar
+  useLayoutEffect(() => {
+    if (!ownsInspectorBar || !setOptions) return;
+    setOptions({ headerShown: true });
+    return () => setOptions({ headerShown: false });
+  }, [ownsInspectorBar, setOptions]);
   // The Duo's native columns show their own sidebar button while the sidebar is open.
   const showsSidebarToggle =
     sidebarToggle !== null &&
@@ -143,7 +153,8 @@ export function AppBar(props: AppBarProps) {
       {(props.actions?.length ||
         (!compactSearch && refresh) ||
         visibleMenus.length ||
-        props.trailing) &&
+        props.trailing ||
+        closeInspector) &&
       props.options?.unstable_headerRightItems === undefined ? (
         <Toolbar placement="right">
           {props.actions?.map(({ loading, ...action }) =>
@@ -175,6 +186,14 @@ export function AppBar(props: AppBarProps) {
           ) : null}
           {visibleMenus.map(createNativeHeaderMenu)}
           {props.trailing}
+          {closeInspector ? (
+            <ScreenHeaderButton
+              accessibilityLabel="Close inspector"
+              icon="xmark"
+              onPress={closeInspector}
+              separateBackground
+            />
+          ) : null}
         </Toolbar>
       ) : null}
     </>

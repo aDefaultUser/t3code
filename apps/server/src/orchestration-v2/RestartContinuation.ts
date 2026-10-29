@@ -19,6 +19,7 @@ import {
   awaitingProviderThreadId,
   cancelledRosterTaskWork,
   cancelledTurnItemWork,
+  continuationFailedBeforePrompt,
   isAwaitedWork,
   isRestartContinuationSource,
   cancelledBeforeStart,
@@ -200,7 +201,10 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
     const source = projection.runs.find((run) => run.id === input.sourceRunId);
     if (
       !source ||
-      !isRestartContinuationSource(source, projection.providerTurns) ||
+      !(
+        isRestartContinuationSource(source, projection.providerTurns) ||
+        continuationFailedBeforePrompt(source, projection.providerTurns)
+      ) ||
       restartContinuationBlocked(
         projection,
         source,
@@ -255,6 +259,27 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
       )
     )
       return;
+    // A parent's Stop reaches its delegated children through an effect a restart can cut short.
+    const { lineage, forkedFrom } = projection.thread;
+    const taskId =
+      source.delegatedTaskId ?? (forkedFrom?.type === "node" ? forkedFrom.nodeId : undefined);
+    if (
+      lineage.relationshipToParent === "subagent" &&
+      lineage.parentThreadId !== null &&
+      taskId !== undefined
+    ) {
+      const parentRunId = (yield* threads.getThreadRecords(lineage.parentThreadId, ["subagents"], {
+        subagentIds: [taskId],
+      })).subagents.find((task) => task.id === taskId)?.runId;
+      if (
+        parentRunId != null &&
+        (yield* threads.getThreadRecords(lineage.parentThreadId, ["turnItems"], {
+          turnItemTypes: ["run_interrupt_request"],
+          turnItemRunIds: [parentRunId],
+        })).turnItems.length > 0
+      )
+        return;
+    }
     const sourceMessage = sourceRecords.messages.find(
       (message) => message.id === source.userMessageId,
     );

@@ -20,6 +20,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as ServerSettings from "../serverSettings.ts";
 import { restartContinuationRun, continueRestartedRun } from "./RestartContinuation.ts";
+import { continuationStartRetryDelayMs } from "./RestartBackgroundNote.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ProviderRuntimeRecovery from "./ProviderRuntimeRecoveryService.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
@@ -46,6 +47,8 @@ function makeProjection() {
       providerInstanceId: instanceId,
       archivedAt: null,
       deletedAt: null,
+      lineage: { parentThreadId: null, relationshipToParent: null },
+      forkedFrom: null,
     },
     runs: [
       {
@@ -839,10 +842,13 @@ it.effect("does not cancel or resume a run that completes while shutdown intent 
   }),
 );
 
-const continuationDispatches = (projection: OrchestrationV2ThreadProjection) =>
+const continuationDispatches = (
+  projection: OrchestrationV2ThreadProjection,
+  sourceRunId: RunId = runId,
+) =>
   Effect.gen(function* () {
     const dispatches: Array<Extract<OrchestrationV2Command, { type: "message.dispatch" }>> = [];
-    yield* continueRestartedRun({ threadId, sourceRunId: runId }).pipe(
+    yield* continueRestartedRun({ threadId, sourceRunId }).pipe(
       Effect.provide(
         Layer.merge(
           Layer.mock(ThreadManagementService.ThreadManagementService)({
@@ -940,6 +946,72 @@ it.effect("continues a resumed queued run that ran after an earlier continuation
       runs: [...cut.runs, finishedContinuation],
     } as unknown as OrchestrationV2ThreadProjection);
     assert.deepEqual(texts, ["Continue where you left off."]);
+  }),
+);
+
+it("backs off twice from a continuation the provider never took, then lets it fail", () => {
+  const base = makeProjection();
+  const failedStart = (id: string, of: RunId) => ({
+    ...base.runs[0]!,
+    id: RunId.make(id),
+    activeAttemptId: RunAttemptId.make(`attempt:${id}`),
+    status: "failed" as const,
+    restartContinuationOfRunId: of,
+  });
+  const first = failedStart("run:retry-1", runId);
+  const second = failedStart("run:retry-2", first.id);
+  const third = failedStart("run:retry-3", second.id);
+  const projection = (failureClass = "provider_error", providerTurns = base.providerTurns) =>
+    ({
+      runs: [{ ...base.runs[0]!, status: "cancelled" }, first, second, third],
+      providerTurns,
+      turnItems: [first, second, third].map((run) => ({
+        id: `error:${run.id}`,
+        type: "error",
+        status: "failed",
+        runId: run.id,
+        nodeId: run.rootNodeId,
+        ordinal: 1,
+        updatedAt: now,
+        failure: { class: failureClass, message: "Failed.", code: null, retryable: null },
+      })),
+    }) as unknown as Parameters<typeof continuationStartRetryDelayMs>[1];
+  assert.deepEqual(
+    [first, second, third].map((run) => continuationStartRetryDelayMs(run, projection())),
+    [60_000, 180_000, undefined],
+  );
+  for (const failureClass of ["usage_limit", "permission_error", "validation_error"])
+    assert.isUndefined(continuationStartRetryDelayMs(first, projection(failureClass)));
+  // Once the provider took the prompt, starting again would repeat the turn.
+  assert.isUndefined(
+    continuationStartRetryDelayMs(
+      first,
+      projection("provider_error", [
+        { ...base.providerTurns[0]!, runAttemptId: first.activeAttemptId, status: "failed" },
+      ] as never),
+    ),
+  );
+});
+
+it.effect("continues again after a continuation fails before its prompt", () =>
+  Effect.gen(function* () {
+    const cut = cutMidTurn();
+    const failedStart = {
+      ...cut.runs[0]!,
+      id: RunId.make("run:failed-start"),
+      ordinal: 2,
+      activeAttemptId: RunAttemptId.make("attempt:failed-start"),
+      status: "failed",
+      restartContinuationOfRunId: runId,
+    };
+    const dispatches = yield* continuationDispatches(
+      { ...cut, runs: [...cut.runs, failedStart] } as unknown as OrchestrationV2ThreadProjection,
+      failedStart.id,
+    );
+    assert.deepEqual(
+      dispatches.map((command) => command.restartContinuationOfRunId),
+      [failedStart.id],
+    );
   }),
 );
 

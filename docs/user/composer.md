@@ -204,8 +204,8 @@ To set it up, on the machine that runs the environment:
    **Dictate with whisper.cpp**, and enter the model's full path. The setting shows
    whether the environment can find both files.
 
-Click the composer's microphone or press `mod+Alt+V` to start, then click finish or press
-the shortcut again. You can also use **Start or finish dictating** in the command palette.
+Click the composer's microphone or press `mod+Alt+V`, and start talking after the rising chime.
+Click finish or press the shortcut again, and a falling chime tells you the microphone is off. You can also use **Start or finish dictating** in the command palette.
 Text is inserted where your selection was when recording started, ready for you to review
 and edit. It is never sent automatically. You can't edit or send the draft while dictating,
 and canceling discards the recording and keeps your draft.

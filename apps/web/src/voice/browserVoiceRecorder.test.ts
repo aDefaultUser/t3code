@@ -33,7 +33,7 @@ class FakeMediaRecorder extends EventTarget {
   }
 }
 
-function setup(permission: PermissionState | "unsupported" = "granted") {
+function setup(permission: PermissionState | "unsupported" = "granted", holdChime = false) {
   vi.unstubAllGlobals();
   FakeMediaRecorder.chunkBytes = 5;
   const stopTrack = vi.fn();
@@ -56,8 +56,20 @@ function setup(permission: PermissionState | "unsupported" = "granted") {
     },
   );
   const statuses: VoiceRecorderStatus[] = [];
-  const capture = createBrowserVoiceRecorder((status) => statuses.push(status));
-  return { capture, statuses, stopTrack, getUserMedia };
+  const events: string[] = [];
+  const chimeDone = { release: () => {} };
+  const capture = createBrowserVoiceRecorder(
+    (status) => statuses.push(status),
+    (chime) => {
+      events.push(`chime:${chime}`);
+      return holdChime
+        ? new Promise((resolve) => {
+            chimeDone.release = resolve;
+          })
+        : Promise.resolve();
+    },
+  );
+  return { capture, statuses, stopTrack, getUserMedia, events, chimeDone };
 }
 
 it("releases the microphone on stop and hands over the recording as PCM", async () => {
@@ -88,6 +100,48 @@ it.each([
   const pcm = capture.readPcm(capture.recorder.uri!);
   if (expected === "error") await expect(pcm).rejects.toThrow("bad");
   else expect((await pcm).byteLength).toBe(expected);
+});
+
+it("keeps both chimes out of the recording, which whisper would hear as words", async () => {
+  const { capture, events, chimeDone } = setup("granted", true);
+  const preparing = capture.recorder.prepareToRecordAsync();
+  let prepared = false;
+  void preparing.then(() => {
+    prepared = true;
+  });
+  await vi.waitFor(() => expect(events).toEqual(["chime:on"]));
+  expect(prepared).toBe(false);
+  chimeDone.release();
+  await preparing;
+
+  capture.recorder.record({ forDuration: 300 });
+  expect(FakeMediaRecorder.last.state).toBe("recording");
+  const stopped = capture.recorder.stop();
+  expect(events).toEqual(["chime:on"]);
+  await stopped;
+  expect(FakeMediaRecorder.last.state).toBe("inactive");
+  expect(events).toEqual(["chime:on", "chime:off"]);
+});
+
+it("plays the off chime when the browser ends the recording itself", async () => {
+  const { capture, events } = setup();
+  await capture.recorder.prepareToRecordAsync();
+  capture.recorder.record({ forDuration: 300 });
+  FakeMediaRecorder.last.finish();
+  expect(events).toEqual(["chime:on", "chime:off"]);
+});
+
+it("does not start recording when cancelled during the on chime", async () => {
+  const { capture, chimeDone, stopTrack } = setup("granted", true);
+  const abort = new AbortController();
+  const preparing = capture.recorder.prepareToRecordAsync(abort.signal);
+  await vi.waitFor(() => expect(FakeMediaRecorder.last.state).toBe("inactive"));
+  abort.abort();
+  await vi.waitFor(() => chimeDone.release());
+  chimeDone.release();
+  await expect(preparing).rejects.toMatchObject({ code: "cancelled" });
+  await capture.recorder.stop();
+  expect(stopTrack).toHaveBeenCalledOnce();
 });
 
 it("does not keep a live microphone when cancelled during the permission prompt", async () => {

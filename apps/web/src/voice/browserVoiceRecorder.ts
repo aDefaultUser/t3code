@@ -6,6 +6,8 @@ import {
 } from "@t3tools/client-runtime/voice-input";
 import { VOICE_PCM_SAMPLE_RATE } from "@t3tools/contracts";
 
+import { playDictationChime, type DictationChime } from "./dictationChime";
+
 export function browserSupportsDictation(): boolean {
   return (
     typeof window !== "undefined" &&
@@ -57,7 +59,10 @@ async function decodeRecordingToPcm(blob: Blob) {
   return encodePcm16(channels);
 }
 
-export function createBrowserVoiceRecorder(onStatus: (status: VoiceRecorderStatus) => void) {
+export function createBrowserVoiceRecorder(
+  onStatus: (status: VoiceRecorderStatus) => void,
+  playChime: (chime: DictationChime) => Promise<void> = playDictationChime,
+) {
   const recordings = new Map<string, Blob>();
   let nextRecordingId = 0;
   let stream: MediaStream | null = null;
@@ -87,6 +92,7 @@ export function createBrowserVoiceRecorder(onStatus: (status: VoiceRecorderStatu
         () => {
           releaseStream();
           stopping = null;
+          void playChime("off");
           resolve();
         },
         { once: true },
@@ -123,6 +129,7 @@ export function createBrowserVoiceRecorder(onStatus: (status: VoiceRecorderStatu
         // The browser ends the recording itself when the microphone goes away; keep what was said.
         if (!stopping && recorder === created) {
           releaseStream();
+          void playChime("off");
           onStatus({ isFinished: true, hasError: false, error: null, url: uri });
         }
       });
@@ -135,6 +142,10 @@ export function createBrowserVoiceRecorder(onStatus: (status: VoiceRecorderStatu
         });
       });
       recorder = created;
+      // Whisper hears a chime in the recording as words like "Thank you", so it ends before recording
+      // starts, and the "off" chime only plays after recording has stopped.
+      await playChime("on");
+      if (signal) throwIfVoiceTranscriptionAborted(signal);
     },
     record({ forDuration }) {
       if (!recorder) throw new Error("Voice recorder is not prepared.");

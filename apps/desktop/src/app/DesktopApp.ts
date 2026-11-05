@@ -338,7 +338,10 @@ const startup = Effect.gen(function* () {
   yield* DesktopRemoteUpdates.listen;
   yield* DesktopStartupRecovery.listen;
   // Portal identity is prepared pre-ready; MIME helpers must not gate the backend or window.
-  yield* linuxUrlHandler.register.pipe(Effect.forkScoped);
+  // Local side-by-side build: leave the installed app's t3code:// handler alone.
+  if (!process.env.T3CODE_DESKTOP_SIDE_BY_SIDE_APP_DATA) {
+    yield* linuxUrlHandler.register.pipe(Effect.forkScoped);
+  }
   yield* bootstrap.pipe(Effect.catchCause((cause) => fatalStartupCause("bootstrap", cause)));
 }).pipe(Effect.withSpan("desktop.startup"));
 

@@ -77,7 +77,9 @@ export const make = Effect.gen(function* () {
       // have removed the executable referenced by the previous launch's entry.
       try {
         const applicationsDir = NodePath.posix.join(
-          process.env.XDG_DATA_HOME?.trim() ||
+          // Local side-by-side build: keep this entry away from the installed app's.
+          process.env.T3CODE_DESKTOP_SIDE_BY_SIDE_APP_DATA?.trim() ||
+            process.env.XDG_DATA_HOME?.trim() ||
             NodePath.posix.join(homeDirectory, ".local", "share"),
           "applications",
         );

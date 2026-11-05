@@ -155,7 +155,10 @@ const make = Effect.fn("desktop.environment.make")(function* (
         )
       : input.platform === "darwin"
         ? path.join(homeDirectory, "Library", "Application Support")
-        : Option.getOrElse(config.xdgConfigHome, () => path.join(homeDirectory, ".config"));
+        : Option.getOrElse(
+            Option.orElse(config.sideBySideAppData, () => config.xdgConfigHome),
+            () => path.join(homeDirectory, ".config"),
+          );
   const baseDir = resolveDesktopBaseDir({
     homeDirectory,
     joinPath: path.join,

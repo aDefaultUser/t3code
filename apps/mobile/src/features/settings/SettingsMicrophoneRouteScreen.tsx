@@ -19,6 +19,7 @@ import {
 } from "../../lib/microphonePriority";
 import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
+import { ThemedSwitch } from "../../components/ui/ThemedSwitch";
 import { ThreadSwipeable } from "../home/thread-swipe-actions";
 import { ListActionRow as SettingsActionRow } from "../../components/ui/ListActionRow";
 import { SettingsDragHandle } from "./components/SettingsDragHandle";
@@ -107,6 +108,42 @@ export function SettingsMicrophoneRouteScreen() {
   return transcriber === null ? <VoiceInputUnavailable /> : <MicrophoneSettings />;
 }
 
+function WhisperCppSection() {
+  const preferencesResult = useAtomValue(mobilePreferencesAtom);
+  const savePreferences = useAtomSet(updateMobilePreferencesAtom);
+  const enabled =
+    AsyncResult.isSuccess(preferencesResult) &&
+    preferencesResult.value.voiceTranscriptionEngine === "whisper-cpp";
+  return (
+    <>
+      <SettingsSection title="Transcription">
+        <ListRowLayout
+          icon="server.rack"
+          label="Use whisper.cpp on the environment"
+          accessory={
+            <ThemedSwitch
+              accessibilityLabel="Use whisper.cpp on the environment"
+              value={enabled}
+              onValueChange={(next) =>
+                savePreferences({
+                  transform: () => ({
+                    voiceTranscriptionEngine: next ? "whisper-cpp" : "device",
+                  }),
+                })
+              }
+            />
+          }
+        />
+      </SettingsSection>
+      <Text className="px-2 text-sm text-foreground-muted">
+        Sends your recording to the thread's environment instead of transcribing on this device. It
+        applies when that environment has whisper.cpp dictation turned on in its voice input
+        settings on web or desktop.
+      </Text>
+    </>
+  );
+}
+
 function VoiceInputUnavailable() {
   const insets = useSafeAreaInsets();
   return (
@@ -122,6 +159,7 @@ function VoiceInputUnavailable() {
           <ListRowLayout icon="mic" label="Not available on this device" />
         </SettingsSection>
         <Text className="px-2 text-sm text-foreground-muted">{UNAVAILABLE_EXPLANATION}</Text>
+        <WhisperCppSection />
       </ScrollView>
     </SettingsScreen>
   );
@@ -201,6 +239,7 @@ function MicrophoneSettings() {
             </Text>
           </>
         ) : null}
+        <WhisperCppSection />
         <SettingsSection title="Preferred order">
           {entries.map((entry, index) => {
             const key = microphoneEntryKey(entry);

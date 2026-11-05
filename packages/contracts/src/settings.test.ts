@@ -40,6 +40,17 @@ const encodeServerSettings = Schema.encodeSync(ServerSettings);
 const encodeServerSettingsPatch = Schema.encodeSync(ServerSettingsPatch);
 const decodeClaudeSettings = Schema.decodeUnknownSync(ClaudeSettings);
 
+describe("whisper.cpp settings", () => {
+  it("keeps dictation off for existing installations", () => {
+    expect(decodeServerSettings({}).whisperCpp).toEqual({
+      enabled: false,
+      binaryPath: "",
+      modelPath: "",
+      language: "auto",
+    });
+  });
+});
+
 describe("storage cleanup settings", () => {
   it("keeps cleanup disabled for existing installations", () => {
     expect(decodeServerSettings({}).worktreeCleanup).toBeNull();

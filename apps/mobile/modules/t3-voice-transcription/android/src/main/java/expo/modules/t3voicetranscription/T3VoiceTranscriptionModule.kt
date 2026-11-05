@@ -1,11 +1,13 @@
 package expo.modules.t3voicetranscription
 
 import android.content.res.Resources
+import android.net.Uri
 import android.os.Build
 import expo.modules.kotlin.Promise
 import expo.modules.kotlin.functions.Coroutine
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
+import java.io.File
 import java.util.Locale
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -63,6 +65,26 @@ class T3VoiceTranscriptionModule : Module() {
       runOperation(id, promise, "transcription-failed") {
         val context = requireNotNull(appContext.reactContext)
         MlKitSpeechClient(context, Locale.forLanguageTag(language), mode).use { it.transcribe(uri) }
+      }
+    }
+
+    AsyncFunction("decodeRecordingToPcm") { id: Int, uri: String, promise: Promise ->
+      runOperation(id, promise, "transcription-failed") {
+        val context = requireNotNull(appContext.reactContext)
+        // A cancel can lose the URI of an earlier copy, so the next one sweeps it.
+        context.cacheDir
+          .listFiles { file -> file.name.startsWith("dictation-upload-") }
+          ?.forEach { it.delete() }
+        withRecordedPcm(context, uri) { pcm ->
+          val output = File.createTempFile("dictation-upload-", ".pcm", context.cacheDir)
+          try {
+            pcm.copyTo(output, overwrite = true)
+            Uri.fromFile(output).toString()
+          } catch (error: Throwable) {
+            output.delete()
+            throw error
+          }
+        }
       }
     }
 

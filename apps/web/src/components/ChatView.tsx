@@ -2974,6 +2974,15 @@ export default function ChatView(props: ChatViewProps) {
     annotation: PreviewAnnotationPayload,
     image: ComposerImageAttachment | null,
   ) => {
+    // This send skips the composer's own gate, and would change the draft being dictated.
+    if (composerRef.current?.isDictating()) {
+      toastManager.add({
+        type: "info",
+        title: "Finish dictating first.",
+        description: "Then send this annotation.",
+      });
+      return;
+    }
     void onSend(undefined, "auto", "foreground", { annotation, image });
   };
   const sendPreviewAnnotationStable = useStableCallback(sendPreviewAnnotation);

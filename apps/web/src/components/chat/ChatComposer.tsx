@@ -277,7 +277,17 @@ import {
   usePreparingComposerImages,
 } from "./preparingComposerImages";
 import { ComposerControlsBar } from "./ComposerControlsBar";
+import {
+  voiceInputBlocksSubmission,
+  type VoiceInputState,
+} from "@t3tools/client-runtime/voice-input";
+import { useEnvironment } from "../../state/environments";
+import { browserSupportsDictation } from "../../voice/browserVoiceRecorder";
+import { useComposerDictation } from "../../voice/useComposerDictation";
+import { ComposerDictationControl } from "./ComposerDictationControl";
 import { composerCommandKeyHandler } from "./composerCommandKey";
+
+const IDLE_DICTATION_STATE: VoiceInputState = { phase: "idle", error: null, errorAction: null };
 
 function consumePasteAsTextShortcut(deadline: { current: number }): boolean {
   const armed = Date.now() <= deadline.current;
@@ -307,6 +317,8 @@ export interface ChatComposerHandle {
   isModelPickerOpen: () => boolean;
   isCaretAtStart: () => boolean;
   compactContext: () => void;
+  toggleDictation: () => void;
+  isDictating: () => boolean;
   readSnapshot: () => {
     value: string;
     cursor: number;
@@ -606,16 +618,22 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   );
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const composerDraftTargetKey = composerTargetKey(composerDraftTarget);
+  const [dictationState, setDictationState] = useState<VoiceInputState>(IDLE_DICTATION_STATE);
+  const isDictating = voiceInputBlocksSubmission(dictationState);
   const {
     heldRequestIds,
     onDraftChange: onTypingGuardDraftChange,
     onFocus: onTypingGuardFocus,
     onBlur: onTypingGuardBlur,
     onSend: onTypingGuardSend,
-  } = useComposerTypingGuard(composerDraftTargetKey, [
-    ...pendingApprovals.map((request) => request.requestId),
-    ...incomingPendingUserInputs.map((request) => request.requestId),
-  ]);
+  } = useComposerTypingGuard(
+    composerDraftTargetKey,
+    [
+      ...pendingApprovals.map((request) => request.requestId),
+      ...incomingPendingUserInputs.map((request) => request.requestId),
+    ],
+    isDictating,
+  );
   // A layout effect so the timeline never paints a held approval as answerable.
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- publishes held requests to the timeline without lifting per-keystroke typing state
   useLayoutEffect(() => {
@@ -935,6 +953,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   );
   const sendDisabledReason =
     externalSendDisabledReason ??
+    (isDictating ? "Finish dictating before sending." : null) ??
     (multipleModelSelections?.length === 0 ? "Select at least one model." : null) ??
     (activePendingProgress
       ? attachmentBlockReason
@@ -1244,6 +1263,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         canAdvance:
           activePendingProgress.canAdvance &&
           !attachmentBlockReason &&
+          !isDictating &&
           !(questionPreparations[attachmentTargetKey] ?? 0),
         isResponding: activePendingIsResponding,
         isComplete: Boolean(activePendingResolvedAnswers),
@@ -1806,6 +1826,44 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     return true;
   };
   const applyPromptReplacementStable = useStableCallback(applyPromptReplacement);
+
+  const dictationEnvironment = useEnvironment(environmentId);
+  const dictationAvailable =
+    canOperateThread &&
+    !projectSelectionRequired &&
+    !isChoiceOnlyPendingQuestion &&
+    dictationEnvironment?.serverConfig?.environment.capabilities.whisperCppTranscription === true &&
+    dictationEnvironment.serverConfig.settings.whisperCpp.enabled;
+  const dictationUnsupportedReason = browserSupportsDictation()
+    ? null
+    : "Dictation needs HTTPS or localhost";
+  const dictation = useComposerDictation({
+    environmentId,
+    ownerKey: attachmentTargetKey,
+    readDraft: () => {
+      const end = promptRef.current.length;
+      return {
+        text: promptRef.current,
+        selection: composerEditorRef.current?.readSelectionRange() ?? { start: end, end },
+      };
+    },
+    commitDraft: (text, selection) => {
+      // Transcribing can take minutes; don't pull focus back if the user has moved on.
+      const active = document.activeElement;
+      const focusedElsewhere =
+        active !== null && active !== document.body && !composerFormRef.current?.contains(active);
+      applyPromptReplacementStable(0, promptRef.current.length, text, {
+        expandedCursorAfterReplace: selection.end,
+        focusEditorAfterReplace: !focusedElsewhere,
+      });
+    },
+    onStateChange: setDictationState,
+  });
+  const toggleDictationStable = useStableCallback(() => {
+    if (isDictating || (dictationAvailable && dictationUnsupportedReason === null)) {
+      dictation.toggle();
+    }
+  });
 
   const readComposerSnapshot = (): {
     value: string;
@@ -2408,6 +2466,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   ): boolean => {
     if (
       text.length === 0 ||
+      isDictating ||
       activePendingIsResponding ||
       (pendingUserInputs.length > 0 && !activePendingProgress?.activeQuestion) ||
       projectSelectionRequired ||
@@ -2841,7 +2900,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         countPreparingComposerImages(attachmentTargetKey) > 0 ||
         pendingDraftWork.has(attachmentTargetKey),
       insertTextAtEnd: insertComposerTextAtEndStable,
+      toggleDictation: toggleDictationStable,
+      isDictating: () => isDictating,
       pasteTextAtEnd: (text: string, options) => {
+        if (isDictating) return false;
         const shortcutArmed = consumePasteAsTextShortcut(pasteAsTextShortcutUntilRef);
         const bypassAutoAttachment = options?.bypassAutoAttachment === true || shortcutArmed;
         const promptLength = promptRef.current.length;
@@ -3431,7 +3493,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     disabled={
                       projectSelectionRequired ||
                       isChoiceOnlyPendingQuestion ||
-                      activePendingIsResponding
+                      activePendingIsResponding ||
+                      isDictating
                     }
                   />
                 </ComposerContextActionsContext>
@@ -3497,6 +3560,20 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   >
                     {composerControls}
                   </div>
+                  {dictationAvailable || isDictating ? (
+                    <ComposerDictationControl
+                      phase={dictationState.phase}
+                      environmentLabel={dictationEnvironment?.label ?? "this environment"}
+                      unsupportedReason={dictationUnsupportedReason}
+                      shortcutLabel={shortcutLabelForCommand(keybindings, "composer.dictate")}
+                      onStart={dictation.start}
+                      onStop={dictation.stop}
+                      onCancel={() => {
+                        dictation.cancel();
+                        focusComposer();
+                      }}
+                    />
+                  ) : null}
                   <ComposerFooterPrimaryActions
                     compact={isComposerPrimaryActionsCompact}
                     canOperateThread={canOperateThread}

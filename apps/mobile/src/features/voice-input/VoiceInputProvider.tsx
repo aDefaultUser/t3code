@@ -1,5 +1,11 @@
 import { useAtomValue } from "@effect/atom-react";
-import { AudioModule, RecordingPresets, type RecordingStatus } from "expo-audio";
+import {
+  AudioModule,
+  AudioQuality,
+  IOSOutputFormat,
+  RecordingPresets,
+  type RecordingStatus,
+} from "expo-audio";
 import { File } from "expo-file-system";
 import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
 import { useSyncExternalStore } from "react";
@@ -13,13 +19,20 @@ import {
   preferredMicrophoneInput,
   rememberMicrophones,
 } from "../../lib/microphonePriority";
-import { getLocalVoiceTranscriber } from "../../native/voiceTranscription";
+import { getLocalVoiceTranscriber, readRecordingPcm } from "../../native/voiceTranscription";
+import { connectionAtomRuntime } from "../../connection/runtime";
+import { serverEnvironment } from "../../state/server";
+import { environmentSession } from "../../state/session";
 import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
 import { getNativeShowcaseScene } from "../showcase/nativeShowcaseScene";
 import {
+  createEnvironmentVoiceTranscriber,
+  createVoiceRequestRunner,
   voiceInputBlocksSubmission,
   type VoiceTranscriber,
 } from "@t3tools/client-runtime/voice-input";
+import type { EnvironmentId } from "@t3tools/contracts";
+import * as Option from "effect/Option";
 import { createLazyVoiceRecorder } from "./lazyVoiceRecorder";
 import { VOICE_WAVEFORM_SAMPLE_COUNT } from "./voiceInputMetering";
 import { VoiceInputSession } from "./voiceInputSession";
@@ -41,6 +54,20 @@ const VOICE_RECORDING_OPTIONS = {
   bitRate: RecordingPresets.HIGH_QUALITY.bitRate,
   isMeteringEnabled: true,
   ...(Platform.OS === "ios" ? IOS_RECORDING_OPTIONS : ANDROID_RECORDING_OPTIONS),
+};
+
+// iOS can record whisper.cpp's format directly; Android records AAC and decodes natively.
+const IOS_WHISPER_RECORDING_OPTIONS = {
+  extension: ".wav",
+  sampleRate: 16_000,
+  numberOfChannels: 1,
+  bitRate: 256_000,
+  isMeteringEnabled: true,
+  outputFormat: IOSOutputFormat.LINEARPCM,
+  audioQuality: AudioQuality.MAX,
+  linearPCMBitDepth: 16 as const,
+  linearPCMIsBigEndian: false,
+  linearPCMIsFloat: false,
 };
 
 function keepScreenAwake(tag: string): () => void {
@@ -68,6 +95,27 @@ const localVoiceInputAvailableAtom = Atom.make((get) => {
   return transcriber !== null && transcriber !== "checking";
 });
 
+const NO_WHISPER_ATOM = Atom.make(false).pipe(Atom.withLabel("mobile:voice-input:no-whisper"));
+const whisperEnabledAtom = Atom.family((environmentId: EnvironmentId) =>
+  Atom.make((get) => {
+    const preferences = get(mobilePreferencesAtom);
+    const config = get(serverEnvironment.configValueAtom(environmentId));
+    return (
+      AsyncResult.isSuccess(preferences) &&
+      preferences.value.voiceTranscriptionEngine === "whisper-cpp" &&
+      config?.environment.capabilities.whisperCppTranscription === true &&
+      config.settings.whisperCpp.enabled
+    );
+  }).pipe(Atom.withLabel(`mobile:voice-input:whisper-enabled:${environmentId}`)),
+);
+
+/** A boolean, so composers re-render when dictation flips, not on every preference or config change. */
+export function useWhisperEnabled(environmentId: EnvironmentId | undefined): boolean {
+  return useAtomValue(
+    environmentId === undefined ? NO_WHISPER_ATOM : whisperEnabledAtom(environmentId),
+  );
+}
+
 /**
  * The app has one microphone and one dictation at a time, so the session
  * lives for the registry's lifetime rather than any screen's.
@@ -86,8 +134,34 @@ const voiceInputAtom = Atom.make((get) => {
   const permission = createVoiceRecordingPermission(() => {
     void session.controller.appMovedToBackground();
   });
+  const whisperTranscriber = (environmentId: EnvironmentId) =>
+    createEnvironmentVoiceTranscriber({
+      getPrepared: () =>
+        Option.getOrNull(
+          registry.get(environmentSession.preparedConnectionValueAtom(environmentId)),
+        ),
+      run: createVoiceRequestRunner(registry, connectionAtomRuntime),
+      readPcm: readRecordingPcm,
+      deviceLocale: () => Intl.DateTimeFormat().resolvedOptions().locale,
+    });
+  // Re-read here so a retry after opting out never uploads to the environment.
+  const activeWhisperEnvironmentId = () => {
+    const preferences = registry.get(mobilePreferencesAtom);
+    return AsyncResult.isSuccess(preferences) &&
+      preferences.value.voiceTranscriptionEngine === "whisper-cpp"
+      ? session.whisperEnvironmentId
+      : null;
+  };
+  let recorderUsesWhisper = false;
   const recorder = createLazyVoiceRecorder({
-    create: () => new AudioModule.AudioRecorder(VOICE_RECORDING_OPTIONS),
+    create: () => {
+      recorderUsesWhisper = activeWhisperEnvironmentId() !== null;
+      return new AudioModule.AudioRecorder(
+        recorderUsesWhisper && Platform.OS === "ios"
+          ? IOS_WHISPER_RECORDING_OPTIONS
+          : VOICE_RECORDING_OPTIONS,
+      );
+    },
     onStatus: (status: RecordingStatus) => {
       session.controller.handleRecorderStatus({
         isFinished: status.isFinished,
@@ -115,11 +189,15 @@ const voiceInputAtom = Atom.make((get) => {
   const session: VoiceInputSession = new VoiceInputSession({
     recorder,
     getTranscriber: () => {
+      const environmentId = activeWhisperEnvironmentId();
+      if (environmentId !== null) return whisperTranscriber(environmentId);
       const transcriber = registry.get(localVoiceTranscriberAtom);
       return transcriber === "checking" ? null : transcriber;
     },
     requestPermission: permission.requestPermission,
     configureRecording: async () => {
+      // Recording options are fixed at construction, so a change of engine needs a new recorder.
+      if (recorderUsesWhisper !== (activeWhisperEnvironmentId() !== null)) recorder.release();
       const token = acquireAudioSession("recording");
       audioToken = token;
       try {

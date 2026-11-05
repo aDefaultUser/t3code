@@ -3,6 +3,7 @@ import { File } from "expo-file-system";
 
 import {
   VoiceTranscriptionError,
+  pcmFromWav,
   throwIfVoiceTranscriptionAborted,
   type PreparedVoiceTranscription,
   type VoiceTranscriber,
@@ -95,4 +96,13 @@ async function transcribeVoiceRecording(
     throwIfVoiceTranscriptionAborted(signal);
     throw wrapError("transcription-failed", "Voice transcription failed.", error);
   }
+}
+
+export async function readRecordingPcm(uri: string): Promise<Uint8Array<ArrayBuffer>> {
+  const pcm = pcmFromWav(new Uint8Array(await new File(uri).arrayBuffer()));
+  if (pcm) return pcm;
+  throw new VoiceTranscriptionError(
+    "transcription-failed",
+    "This recording is not in the format whisper.cpp needs.",
+  );
 }

@@ -77,7 +77,7 @@ Open **Settings > Storage** and turn on automatic worktree cleanup. You can also
 
 ## Is there voice input?
 
-On iPhone, yes. You need iOS 26 or later. Tap the mic in the composer, talk, check the text, then send. Web, desktop, and Android do not have it yet. [Voice input on iPhone](./composer.md#voice-input-on-iphone)
+Yes. On a supported iPhone or Android device, tap the mic in the composer, talk, check the text, then send. On web and desktop, set up whisper.cpp on your environment first. [Voice input on mobile](./composer.md#voice-input-on-mobile) and [Dictate with whisper.cpp](./composer.md#dictate-with-whispercpp)
 
 ## Does it work on Windows, Mac, and Linux?
 

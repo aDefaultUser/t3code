@@ -21,6 +21,7 @@ export type SettingsPath =
   | "/settings/diagnostics"
   | "/settings/appearance"
   | "/settings/chat"
+  | "/settings/voice-input"
   | "/settings/diffs"
   | "/settings/keybindings"
   | "/settings/snap-shot"
@@ -91,6 +92,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/general": "General",
   "/settings/appearance": "Appearance",
   "/settings/chat": "Chat",
+  "/settings/voice-input": "Voice input",
   "/settings/diffs": "Diffs & pull requests",
   "/settings/keybindings": "Keybindings",
   "/settings/snap-shot": "SnapShots",
@@ -121,6 +123,7 @@ export const SETTINGS_NAV_GROUPS: ReadonlyArray<{
       "/settings/general",
       "/settings/appearance",
       "/settings/chat",
+      "/settings/voice-input",
       "/settings/diffs",
       "/settings/keybindings",
       "/settings/snap-shot",
@@ -734,6 +737,38 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["telemetry analytics usage data tracking legal opt out"],
   },
   {
+    id: "voice-input-whisper",
+    title: "Dictate with whisper.cpp",
+    to: "/settings/voice-input",
+    scope: "environment",
+    environmentOnly: true,
+    searchTerms: ["voice dictation microphone speech to text transcribe whisper mic"],
+  },
+  {
+    id: "voice-input-whisper-binary",
+    title: "whisper.cpp program",
+    to: "/settings/voice-input",
+    scope: "environment",
+    environmentOnly: true,
+    searchTerms: ["whisper-cli whisper-cpp binary executable path"],
+  },
+  {
+    id: "voice-input-whisper-model",
+    title: "whisper.cpp model",
+    to: "/settings/voice-input",
+    scope: "environment",
+    environmentOnly: true,
+    searchTerms: ["ggml model file path base tiny small"],
+  },
+  {
+    id: "voice-input-whisper-language",
+    title: "Dictation language",
+    to: "/settings/voice-input",
+    scope: "environment",
+    environmentOnly: true,
+    searchTerms: ["voice whisper language locale auto detect"],
+  },
+  {
     id: "telemetry-export",
     title: "OpenTelemetry export",
     to: "/settings/diagnostics",
@@ -1204,6 +1239,7 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/general": null,
   "/settings/appearance": null,
   "/settings/chat": null,
+  "/settings/voice-input": "environment",
   "/settings/diffs": null,
   "/settings/snap-shot": null,
   "/settings/keybindings": null,

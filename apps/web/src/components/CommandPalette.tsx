@@ -1,3 +1,4 @@
+import { browserSupportsDictation } from "../voice/browserVoiceRecorder";
 import { threadPullRequestLinkMode } from "@t3tools/client-runtime/thread-pull-request-compatibility";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
 
@@ -56,6 +57,7 @@ import { useLocation, useNavigate } from "@tanstack/react-router";
 import {
   ArrowLeftIcon,
   BugIcon,
+  MicIcon,
   ChartNoAxesColumnIcon,
   CheckIcon,
   ChevronRightIcon,
@@ -465,6 +467,7 @@ function OpenCommandPaletteDialog(props: {
   const { activeDraftThread, activeThread, defaultProjectRef, handleNewThread } =
     useHandleNewThread();
   const paletteRouteTarget = useThreadRouteTarget();
+  const composerHandle = useComposerHandleContext();
   const projects = useProjects();
   const referenceThreadRef =
     pathname === "/pull-requests"
@@ -1309,6 +1312,27 @@ function OpenCommandPaletteDialog(props: {
       shortcutCommand: "chat.find",
       run: async () => {
         openThreadFind(activeThreadKey);
+      },
+    });
+  }
+
+  const dictationServerConfig = environments.find(
+    (environment) => environment.environmentId === currentProjectEnvironmentId,
+  )?.serverConfig;
+  if (
+    browserSupportsDictation() &&
+    dictationServerConfig?.environment.capabilities.whisperCppTranscription === true &&
+    dictationServerConfig.settings.whisperCpp.enabled
+  ) {
+    actionItems.push({
+      kind: "action",
+      value: "toggle-dictation",
+      title: "Start or finish dictating",
+      searchTerms: ["dictate", "dictation", "voice", "microphone", "speech", "whisper"],
+      icon: <MicIcon className={ITEM_ICON_CLASS} />,
+      shortcutCommand: "composer.dictate",
+      run: async () => {
+        composerHandle?.current?.toggleDictation();
       },
     });
   }

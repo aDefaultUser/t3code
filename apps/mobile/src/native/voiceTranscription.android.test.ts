@@ -5,6 +5,17 @@ const mocks = vi.hoisted(() => ({
   prepare: vi.fn<(id: number) => Promise<{ locale: string; mode: number }>>(),
   transcribe: vi.fn<(id: number, uri: string, locale: string, mode: number) => Promise<string>>(),
   cancel: vi.fn<(id: number) => Promise<void>>(),
+  decodeRecordingToPcm: vi.fn<(id: number, uri: string) => Promise<string>>(),
+  readFile: vi.fn<(uri: string) => Promise<ArrayBuffer>>(),
+  deleteFile: vi.fn<(uri: string) => void>(),
+}));
+
+vi.mock("expo-file-system", () => ({
+  File: class {
+    constructor(private readonly uri: string) {}
+    arrayBuffer = () => mocks.readFile(this.uri);
+    delete = () => mocks.deleteFile(this.uri);
+  },
 }));
 
 vi.mock("expo", () => ({
@@ -16,7 +27,22 @@ import {
   resetVoiceInputGlobalsForTests,
 } from "../../../../packages/client-runtime/src/voice-input/controller";
 
-import { getLocalVoiceTranscriber } from "./voiceTranscription.android";
+import { getLocalVoiceTranscriber, readRecordingPcm } from "./voiceTranscription.android";
+
+it("reads the decoded recording and leaves no copy behind, even if reading fails", async () => {
+  vi.resetAllMocks();
+  const options = { signal: new AbortController().signal };
+  mocks.decodeRecordingToPcm.mockResolvedValue("file:///cache/upload.pcm");
+  mocks.readFile.mockResolvedValueOnce(new Uint8Array([1, 0]).buffer);
+  expect([...(await readRecordingPcm("file:///cache/take.m4a", options))]).toEqual([1, 0]);
+  expect(mocks.decodeRecordingToPcm.mock.calls[0]?.[1]).toBe("file:///cache/take.m4a");
+  expect(mocks.deleteFile).toHaveBeenCalledWith("file:///cache/upload.pcm");
+
+  mocks.deleteFile.mockClear();
+  mocks.readFile.mockRejectedValueOnce(new Error("read failed"));
+  await expect(readRecordingPcm("file:///cache/take.m4a", options)).rejects.toThrow("read failed");
+  expect(mocks.deleteFile).toHaveBeenCalledWith("file:///cache/upload.pcm");
+});
 
 it.each([false, true])(
   "waits for device support before offering a transcriber (%s)",

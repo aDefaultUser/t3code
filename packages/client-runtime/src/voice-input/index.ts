@@ -17,3 +17,10 @@ export {
   type VoiceTranscriptionErrorCode,
   type VoiceTranscriptionOptions,
 } from "./transcription.ts";
+export {
+  createEnvironmentVoiceTranscriber,
+  createVoiceRequestRunner,
+  getEnvironmentVoiceStatus,
+  voiceIssueMessage,
+} from "./environment.ts";
+export { encodePcm16, pcmFromWav } from "./pcm.ts";

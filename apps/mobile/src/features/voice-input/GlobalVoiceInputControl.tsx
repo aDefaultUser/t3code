@@ -200,7 +200,7 @@ function EdgeDictationPill(props: {
                 </Pressable>
               </>
             ) : isError ? (
-              voice.isAvailable ? (
+              voice.isAvailable || voice.session.whisperEnvironmentId !== null ? (
                 <Pressable
                   accessibilityLabel={openSettings ? "Open microphone settings" : "Retry dictation"}
                   accessibilityRole="button"

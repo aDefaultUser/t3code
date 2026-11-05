@@ -1,9 +1,11 @@
 import { requireOptionalNativeModule } from "expo";
+import { File } from "expo-file-system";
 
 import {
   VoiceTranscriptionError,
   throwIfVoiceTranscriptionAborted,
   type VoiceTranscriber,
+  type VoiceTranscriptionOptions,
 } from "@t3tools/client-runtime/voice-input";
 
 type PreparedGoogleTranscription = { readonly locale: string; readonly mode: number };
@@ -13,6 +15,8 @@ type GoogleTranscriptionModule = {
   prepare(id: number): Promise<PreparedGoogleTranscription>;
   transcribe(id: number, uri: string, locale: string, mode: number): Promise<string>;
   cancel(id: number): Promise<void>;
+  /** Writes the recording to a new file as 16 kHz mono 16-bit PCM and returns its URI. */
+  decodeRecordingToPcm?(id: number, uri: string): Promise<string>;
 };
 
 const native = requireOptionalNativeModule<GoogleTranscriptionModule>("T3VoiceTranscription");
@@ -50,6 +54,28 @@ export async function getLocalVoiceTranscriber(): Promise<VoiceTranscriber | nul
       };
     },
   };
+}
+
+export async function readRecordingPcm(
+  uri: string,
+  { signal }: VoiceTranscriptionOptions,
+): Promise<Uint8Array<ArrayBuffer>> {
+  const module = native;
+  if (!module?.decodeRecordingToPcm) {
+    throw new VoiceTranscriptionError(
+      "unavailable",
+      "Update T3 Code to dictate with whisper.cpp on this device.",
+    );
+  }
+  const pcmUri = await runOperation(module, signal, "transcription-failed", (id) =>
+    module.decodeRecordingToPcm!(id, uri),
+  );
+  const file = new File(pcmUri);
+  try {
+    return new Uint8Array(await file.arrayBuffer());
+  } finally {
+    file.delete();
+  }
 }
 
 async function runOperation<T>(

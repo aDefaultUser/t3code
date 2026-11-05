@@ -1,4 +1,5 @@
 import { useFocusEffect } from "@react-navigation/native";
+import type { EnvironmentId } from "@t3tools/contracts";
 import { useCallback, useEffect, useRef } from "react";
 import {
   voiceInputBlocksSubmission,
@@ -6,7 +7,7 @@ import {
 } from "@t3tools/client-runtime/voice-input";
 
 import type { ComposerEditorSelection } from "../../components/ComposerEditor";
-import { useGlobalVoiceInput } from "./VoiceInputProvider";
+import { useGlobalVoiceInput, useWhisperEnabled } from "./VoiceInputProvider";
 import { createVoiceInputTarget } from "./voiceInputSession";
 
 const IDLE_STATE: VoiceInputState = { phase: "idle", error: null, errorAction: null };
@@ -14,6 +15,7 @@ const IDLE_STATE: VoiceInputState = { phase: "idle", error: null, errorAction: n
 export function useVoiceInputController(input: {
   readonly ownerKey: string | null;
   readonly label: string;
+  readonly environmentId?: EnvironmentId;
   readonly readDraftMessage: () => string | null;
   readonly subscribeToDraftChanges: (onChange: () => void) => () => void;
   readonly selection: ComposerEditorSelection;
@@ -23,9 +25,11 @@ export function useVoiceInputController(input: {
 }) {
   const global = useGlobalVoiceInput();
   const { session } = global;
-  const latestInput = useRef(input);
+  const whisperEnabled = useWhisperEnabled(input.environmentId);
+  const whisperEnvironmentId = whisperEnabled ? (input.environmentId ?? null) : null;
+  const latestInput = useRef({ ...input, whisperEnvironmentId });
   // oxlint-disable-next-line react/refs -- Transcription finishes asynchronously and must reach the composer's current selection setter, not the one captured at start.
-  latestInput.current = input;
+  latestInput.current = { ...input, whisperEnvironmentId };
   const mounted = useRef(true);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- tracks mount so async transcription results skip a composer that has unmounted
   useEffect(() => {
@@ -61,12 +65,15 @@ export function useVoiceInputController(input: {
         captured.subscribeToDraftChanges,
       ),
       label: captured.label,
+      whisperEnvironmentId: captured.whisperEnvironmentId,
     });
   }, [session]);
   const state = global.ownerKey === input.ownerKey ? global.state : IDLE_STATE;
   const isBusy = voiceInputBlocksSubmission(state);
   return {
-    isAvailable: global.isAvailable && (!global.isBusy || global.ownerKey === input.ownerKey),
+    isAvailable:
+      (global.isAvailable || whisperEnvironmentId !== null) &&
+      (!global.isBusy || global.ownerKey === input.ownerKey),
     state,
     audioLevels: global.audioLevels,
     elapsedSeconds: global.elapsedSeconds,

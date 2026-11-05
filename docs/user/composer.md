@@ -184,6 +184,45 @@ Stashes containing uploaded files must be restored in their original environment
 Those files are retained for 24 hours. After an upload expires, restore the prompt
 and use **Attach again** or remove the missing file before sending.
 
+## Dictate with whisper.cpp
+
+On web and desktop, you can dictate into the composer with
+[whisper.cpp](https://github.com/ggml-org/whisper.cpp) running on your environment.
+Your recording goes to the machine that runs the thread's environment, is transcribed
+there, and nothing is sent to a third party. This works the same on the local machine,
+over Tailscale, and through T3 Connect.
+
+To set it up, on the machine that runs the environment:
+
+1. Install whisper.cpp, such as `brew install whisper-cpp` on macOS, your distribution's
+   package on Linux, or a build from source. T3 Code looks for `whisper-cli` or
+   `whisper-cpp` on the `PATH`.
+2. Download a model, such as `ggml-base.en.bin` from
+   [the whisper.cpp model list](https://huggingface.co/ggerganov/whisper.cpp). Models with
+   `.en` in the name only understand English. Smaller models are faster and less accurate.
+3. Open **Settings → Voice input**, choose that environment, turn on
+   **Dictate with whisper.cpp**, and enter the model's full path. The setting shows
+   whether the environment can find both files.
+
+Click the composer's microphone or press `mod+Alt+V` to start, then click finish or press
+the shortcut again. You can also use **Start or finish dictating** in the command palette.
+Text is inserted where your selection was when recording started, ready for you to review
+and edit. It is never sent automatically. You can't edit or send the draft while dictating,
+and canceling discards the recording and keeps your draft.
+
+Recordings can be up to five minutes long. Transcription takes longer on a slow machine or
+with a large model, and an environment transcribes one recording at a time, so others wait.
+Through T3 Connect, transcription must finish within about two minutes, so use a smaller model
+if long recordings fail. Going to another draft while dictating discards the recording. If the
+agent asks a question while you're dictating, the question waits until you finish.
+A browser only allows the microphone over HTTPS or on `localhost`, so a plain `http://`
+address on your network can't dictate; use T3 Connect or
+[Tailscale](./remote-access.md) instead.
+
+T3 Code deletes the temporary audio on the environment as soon as transcription ends or
+you cancel. If transcription fails, the error names what to fix, and the environment's
+server log has whisper.cpp's own message.
+
 ## Voice input on mobile
 
 On supported iPhones with iOS 26 or later and Android devices with Android 12 or
@@ -215,8 +254,14 @@ microphone on iOS. Swipe a device left to forget it. Android may use another inp
 when the preferred microphone cannot be routed. Devices with the same name may share
 a saved preference, but simultaneous same-name inputs remain separately selectable.
 
-Transcription runs on your device. T3 Code deletes the temporary audio after
+Transcription runs on your device by default. T3 Code deletes the temporary audio after
 transcription or cancellation; only the message text is sent when you submit.
+
+To use [whisper.cpp](#dictate-with-whispercpp) instead, turn on **Use whisper.cpp on the
+environment** in **Settings → Microphone**. Your recording then goes to the thread's
+environment, in threads whose environment has whisper.cpp dictation turned on. This also
+gives you a microphone on devices without on-device transcription. Other threads and
+scheduled task prompts keep using on-device transcription when the device supports it.
 
 ## Queued messages
 

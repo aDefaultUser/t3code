@@ -5,6 +5,7 @@ import { createBrowserVoiceRecorder, requestMicrophonePermission } from "./brows
 
 class FakeMediaRecorder extends EventTarget {
   static last: FakeMediaRecorder;
+  static chunkBytes = 5;
   state: "inactive" | "recording" = "inactive";
   mimeType = "audio/webm";
 
@@ -21,7 +22,7 @@ class FakeMediaRecorder extends EventTarget {
     this.state = "inactive";
     this.dispatchEvent(
       Object.assign(new Event("dataavailable"), {
-        data: new Blob(["audio"], { type: "audio/webm" }),
+        data: new Blob([new Uint8Array(FakeMediaRecorder.chunkBytes)], { type: "audio/webm" }),
       }),
     );
     this.dispatchEvent(new Event("stop"));
@@ -34,6 +35,7 @@ class FakeMediaRecorder extends EventTarget {
 
 function setup(permission: PermissionState | "unsupported" = "granted") {
   vi.unstubAllGlobals();
+  FakeMediaRecorder.chunkBytes = 5;
   const stopTrack = vi.fn();
   const getUserMedia = vi.fn(async () => ({ getTracks: () => [{ stop: stopTrack }] }));
   vi.stubGlobal("MediaRecorder", FakeMediaRecorder);
@@ -66,6 +68,26 @@ it("releases the microphone on stop and hands over the recording as PCM", async 
   expect(stopTrack).toHaveBeenCalledOnce();
   const pcm = await capture.readPcm(capture.recorder.uri!);
   expect(pcm.byteLength).toBe(4);
+});
+
+it.each([
+  ["reads a near-empty file as nothing said", 5, 0],
+  ["reports a real recording it cannot decode", 50_000, "error"],
+] as const)("%s", async (_, chunkBytes, expected) => {
+  const { capture } = setup();
+  FakeMediaRecorder.chunkBytes = chunkBytes;
+  vi.stubGlobal(
+    "OfflineAudioContext",
+    class {
+      decodeAudioData = () => Promise.reject(new DOMException("bad", "EncodingError"));
+    },
+  );
+  await capture.recorder.prepareToRecordAsync();
+  capture.recorder.record({ forDuration: 300 });
+  await capture.recorder.stop();
+  const pcm = capture.readPcm(capture.recorder.uri!);
+  if (expected === "error") await expect(pcm).rejects.toThrow("bad");
+  else expect((await pcm).byteLength).toBe(expected);
 });
 
 it("does not keep a live microphone when cancelled during the permission prompt", async () => {

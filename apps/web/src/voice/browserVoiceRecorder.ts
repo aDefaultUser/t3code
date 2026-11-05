@@ -15,6 +15,9 @@ export function browserSupportsDictation(): boolean {
   );
 }
 
+// About a quarter of a second of Opus.
+const MIN_DECODABLE_RECORDING_BYTES = 1024;
+
 const stopTracks = (stream: MediaStream) => {
   for (const track of stream.getTracks()) track.stop();
 };
@@ -42,7 +45,12 @@ export async function requestMicrophonePermission() {
 async function decodeRecordingToPcm(blob: Blob) {
   if (blob.size === 0) return new Uint8Array(new ArrayBuffer(0));
   const context = new OfflineAudioContext(1, 1, VOICE_PCM_SAMPLE_RATE);
-  const audio = await context.decodeAudioData(await blob.arrayBuffer());
+  const audio = await context.decodeAudioData(await blob.arrayBuffer()).catch((error: unknown) => {
+    // Finishing right after starting leaves a file with a header and no audio: nothing was said.
+    if (blob.size < MIN_DECODABLE_RECORDING_BYTES) return null;
+    throw error;
+  });
+  if (!audio) return new Uint8Array(new ArrayBuffer(0));
   const channels = Array.from({ length: audio.numberOfChannels }, (_, index) =>
     audio.getChannelData(index),
   );

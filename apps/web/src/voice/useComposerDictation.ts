@@ -51,7 +51,7 @@ function createComposerDictation(initial: ComposerDictationInput) {
     onStateChange: (next) => {
       input.onStateChange(next);
       if (next.phase === "error" && next.error) {
-        toastManager.add({ type: "error", title: "Dictation failed", description: next.error });
+        toastManager.add({ type: "error", title: "Dictation stopped", description: next.error });
       }
     },
   });

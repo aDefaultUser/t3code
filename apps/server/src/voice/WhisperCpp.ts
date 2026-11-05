@@ -19,6 +19,8 @@ const DEFAULT_BINARY_NAMES = ["whisper-cli", "whisper-cpp"];
 const TRANSCRIPTION_TIMEOUT = "15 minutes";
 const MAX_TRANSCRIPT_BYTES = 1024 * 1024;
 const WAV_HEADER_BYTES = 44;
+// About 0.6% of full scale: below any speech, above digital silence and a suppressed noise floor.
+const SILENCE_PEAK = 200;
 // The error line comes first; usage text follows it.
 const STDERR_LOG_CHARS = 2_000;
 
@@ -75,6 +77,15 @@ const ONLY_BRACKETED_SOUNDS = /^(?:\s*(?:\[[^\]]*\]|\([^)]*\)))+\s*$/;
 function cleanWhisperOutput(stdout: string): string {
   if (ONLY_BRACKETED_SOUNDS.test(stdout)) return "";
   return stdout.replace(NON_SPEECH_MARKER, " ").replace(/\s+/g, " ").trim();
+}
+
+/** Whisper invents words such as "you" for silence, so it never sees a recording with no signal. */
+function isSilent(pcm: Uint8Array): boolean {
+  const view = new DataView(pcm.buffer, pcm.byteOffset, pcm.byteLength);
+  for (let offset = 0; offset < pcm.byteLength; offset += 2) {
+    if (Math.abs(view.getInt16(offset, true)) >= SILENCE_PEAK) return false;
+  }
+  return true;
 }
 
 function wavFromPcm(pcm: Uint8Array): Uint8Array {
@@ -151,6 +162,7 @@ const make = Effect.gen(function* () {
     if (issue !== null || binary === null) {
       return yield* new WhisperCppUnavailableError({ issue: issue ?? "binary-missing" });
     }
+    if (isSilent(pcm)) return "";
     const failure = (cause: unknown) =>
       new WhisperCppTranscriptionError({ exitCode: null, stderr: "", cause });
     // The temporary directory is private to this user and removed with its scope, including on cancel.

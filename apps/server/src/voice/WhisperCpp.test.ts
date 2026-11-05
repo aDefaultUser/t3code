@@ -72,7 +72,8 @@ const withService = <A, E, R>(
   );
 
 const unusedRun: ProcessRunner.ProcessRunner["Service"]["run"] = () => Effect.die("not used");
-const speech = new Uint8Array([1, 0, 2, 0]);
+// Two samples of 1000 and -1000.
+const speech = new Uint8Array([0xe8, 0x03, 0x18, 0xfc]);
 
 describe("WhisperCpp", () => {
   it.effect("reports what stands between the settings and a working setup", () =>
@@ -173,6 +174,36 @@ describe("WhisperCpp", () => {
         assert.strictEqual(error._tag, "WhisperCppInvalidAudioError");
       }
     }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("answers for silence itself, because whisper invents words for it", () =>
+    Effect.gen(function* () {
+      const { directory, installBinary, model } = yield* fixture;
+      yield* installBinary("whisper-cli");
+      let calls = 0;
+      const run: ProcessRunner.ProcessRunner["Service"]["run"] = () => {
+        calls += 1;
+        return Effect.succeed(processOutput({ stdout: " you\n" }));
+      };
+      const transcribe = (pcm: Uint8Array) =>
+        withService(
+          { enabled: true, modelPath: model },
+          run,
+          directory,
+          Effect.flatMap(WhisperCpp.WhisperCpp, (service) => service.transcribe(pcm)),
+        );
+
+      const samples = (...values: ReadonlyArray<number>) =>
+        new Uint8Array(Int16Array.from(values).buffer);
+      assert.strictEqual(yield* transcribe(new Uint8Array(32_000)), "");
+      assert.strictEqual(yield* transcribe(samples(199, -199, 0)), "");
+      assert.strictEqual(calls, 0);
+
+      // A single quiet word in a long recording still counts, in either polarity.
+      assert.strictEqual(yield* transcribe(samples(0, 0, 200)), "you");
+      assert.strictEqual(yield* transcribe(samples(-32768, 0)), "you");
+      assert.strictEqual(calls, 2);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
   it.effect("does not start whisper when the setup is incomplete", () =>

@@ -1,3 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodeOS from "node:os";
+
 import { VOICE_PCM_MAX_BYTES, VOICE_PCM_SAMPLE_RATE } from "@t3tools/contracts";
 import type { EnvironmentVoiceIssue, EnvironmentVoiceStatus } from "@t3tools/contracts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
@@ -77,6 +80,14 @@ const ONLY_BRACKETED_SOUNDS = /^(?:\s*(?:\[[^\]]*\]|\([^)]*\)))+\s*$/;
 function cleanWhisperOutput(stdout: string): string {
   if (ONLY_BRACKETED_SOUNDS.test(stdout)) return "";
   return stdout.replace(NON_SPEECH_MARKER, " ").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * whisper-cli defaults to 4 threads. Measured on 16 cores and 32 logical CPUs, it gets faster up to
+ * the physical core count and slower past it, so use half the logical CPUs and leave room for agents.
+ */
+export function whisperThreadCount(logicalCpus: number): number {
+  return Math.max(Math.min(4, logicalCpus), Math.min(16, Math.floor(logicalCpus / 2)));
 }
 
 /** Whisper invents words such as "you" for silence, so it never sees a recording with no signal. */
@@ -174,7 +185,18 @@ const make = Effect.gen(function* () {
     const result = yield* processRunner
       .run({
         command: binary,
-        args: ["-m", model, "-f", wavPath, "-l", language, "-nt", "-np"],
+        args: [
+          "-m",
+          model,
+          "-f",
+          wavPath,
+          "-l",
+          language,
+          "-t",
+          String(whisperThreadCount(NodeOS.availableParallelism())),
+          "-nt",
+          "-np",
+        ],
         timeout: TRANSCRIPTION_TIMEOUT,
         maxOutputBytes: MAX_TRANSCRIPT_BYTES,
         outputMode: "truncate",

@@ -76,6 +76,18 @@ const unusedRun: ProcessRunner.ProcessRunner["Service"]["run"] = () => Effect.di
 const speech = new Uint8Array([0xe8, 0x03, 0x18, 0xfc]);
 
 describe("WhisperCpp", () => {
+  it.each([
+    [1, 1],
+    [2, 2],
+    [4, 4],
+    [8, 4],
+    [12, 6],
+    [32, 16],
+    [128, 16],
+  ])("runs %i logical CPUs on %i threads", (logicalCpus, threads) => {
+    assert.strictEqual(WhisperCpp.whisperThreadCount(logicalCpus), threads);
+  });
+
   it.effect("reports what stands between the settings and a working setup", () =>
     Effect.gen(function* () {
       const { directory, installBinary, model } = yield* fixture;
@@ -146,7 +158,20 @@ describe("WhisperCpp", () => {
       const call = calls[0]!;
       assert.strictEqual(call.command, binary);
       const wavPath = call.args[call.args.indexOf("-f") + 1]!;
-      assert.deepStrictEqual(call.args, ["-m", model, "-f", wavPath, "-l", "en", "-nt", "-np"]);
+      const threads = call.args[call.args.indexOf("-t") + 1]!;
+      assert.deepStrictEqual(call.args, [
+        "-m",
+        model,
+        "-f",
+        wavPath,
+        "-l",
+        "en",
+        "-t",
+        threads,
+        "-nt",
+        "-np",
+      ]);
+      assert.match(threads, /^[1-9][0-9]*$/);
       assert.isFalse(yield* fileSystem.exists(wavPath));
 
       const view = new DataView(call.wav.buffer, call.wav.byteOffset, call.wav.byteLength);

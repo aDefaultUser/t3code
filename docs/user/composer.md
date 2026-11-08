@@ -184,67 +184,41 @@ Stashes containing uploaded files must be restored in their original environment
 Those files are retained for 24 hours. After an upload expires, restore the prompt
 and use **Attach again** or remove the missing file before sending.
 
-## Dictate with whisper.cpp
+## Voice input on web and desktop
 
-On web and desktop, you can dictate into the composer with
-[whisper.cpp](https://github.com/ggml-org/whisper.cpp) running on your environment.
-Your recording goes to the machine that runs the thread's environment, is transcribed
-there, and nothing is sent to a third party. This works the same on the local machine,
-over Tailscale, and through T3 Connect.
-
-To set it up, on the machine that runs the environment:
-
-1. Install whisper.cpp, such as `brew install whisper-cpp` on macOS, your distribution's
-   package on Linux, or a build from source. T3 Code looks for `whisper-cli` or
-   `whisper-cpp` on the `PATH`.
-2. Download a model, such as `ggml-base.en.bin` from
-   [the whisper.cpp model list](https://huggingface.co/ggerganov/whisper.cpp). Models with
-   `.en` in the name only understand English. Smaller models are faster and less accurate.
-3. Open **Settings → Voice input**, choose that environment, turn on
-   **Dictate with whisper.cpp**, and enter the model's full path. The setting shows
-   whether the environment can find both files.
-
-Click the composer's microphone or press `mod+Alt+V`, and start talking after the rising chime.
-Click finish or press the shortcut again, and a falling chime tells you the microphone is off. You can also use **Start or finish dictating** in the command palette.
-Text is inserted where your selection was when recording started, ready for you to review
-and edit. It is never sent automatically. You can't edit or send the draft while dictating,
-and canceling discards the recording and keeps your draft.
-
-Recordings can be up to five minutes long. Transcription takes longer on a slow machine or
-with a large model, and an environment transcribes one recording at a time, so others wait.
-Through T3 Connect, transcription must finish within about two minutes, so use a smaller model
-if long recordings fail. Going to another draft while dictating discards the recording. If the
-agent asks a question while you're dictating, the question waits until you finish.
-A browser only allows the microphone over HTTPS or on `localhost`, so a plain `http://`
-address on your network can't dictate; use T3 Connect or
-[Tailscale](./remote-access.md) instead.
-
-T3 Code deletes the temporary audio on the environment as soon as transcription ends or
-you cancel. If transcription fails, the error names what to fix, and the environment's
-server log has whisper.cpp's own message.
+Use the composer's microphone or `mod+shift+d` to dictate into your draft. Audio
+is transcribed on an environment you choose in **Settings → Voice**; nothing is
+sent until you choose one. See [Voice input](./voice-input.md).
 
 ## Voice input on mobile
 
-On supported iPhones with iOS 26 or later and Android devices with Android 12 or
-later, use the composer's microphone to record, then confirm to transcribe. Text is
+Use the composer's microphone to record, then confirm to transcribe. Text is
 inserted where your selection was when recording started, ready for you to review
 and edit before sending.
 
-Voice input uses on-device speech transcription: Apple's on iOS, and compatible
-Google speech services on Android. When it is unavailable for the device or its
-language, the composer has no microphone button and **Settings → Microphone** says
-voice input isn't available. On Android, keep T3 Code open while recording and
-transcribing.
+By default, audio stays on the phone. Local transcription needs a supported iPhone
+with iOS 26 or later, or Android 12 or later with compatible Google speech services.
+To use a paired environment instead, open **Settings → Voice → Transcribe on**,
+choose the environment, and confirm. Finished recordings go only to that environment,
+even when a draft belongs to another one. This also works on phones without local
+speech recognition. If the chosen environment disconnects, dictation stops; it never
+switches hosts. Choose **This device** to revoke access and discard pending audio.
+For [cloud dictation](./voice-input.md#choose-where-audio-goes), open **Cloud providers**
+under the environment in **Settings → Voice** and confirm which provider may receive recordings.
+On Android, keep T3 Code open while recording and transcribing.
 
-The first use may download a speech model and needs a network connection.
-Later transcription works offline for that language. On Android, transcription
-processes the full recording at roughly its original duration. Recordings can be up to five
+On-device dictation may need a network connection to download a speech model the
+first time. After that it works offline for that language. iPhone dictates in the
+first of your preferred languages (**Settings → General → Language & Region**)
+that Apple’s speech model supports. If none is supported, it tries the app’s
+language. Android transcribes on the device while you
+record and finishes after you stop. Recordings can be up to five
 minutes long. Canceling or an audio interruption discards the recording and
 preserves your existing draft. Navigating to another screen keeps dictation active;
 use the floating controls to finish or cancel. While recording, the screen stays
 awake; it can sleep normally once recording stops.
 
-Choose a preferred order in **Settings → Microphone**. Voice input requests the first
+Choose a preferred order in **Settings → Voice**. Voice input requests the first
 connected microphone in the list. The list mixes kinds (built-in, other wired, other
 Bluetooth, and CarPlay on iOS) with wired and Bluetooth devices you have dictated
 with, listed by name. Drag to rank them together:
@@ -254,14 +228,14 @@ microphone on iOS. Swipe a device left to forget it. Android may use another inp
 when the preferred microphone cannot be routed. Devices with the same name may share
 a saved preference, but simultaneous same-name inputs remain separately selectable.
 
-Transcription runs on your device by default. T3 Code deletes the temporary audio after
-transcription or cancellation; only the message text is sent when you submit.
+T3 Code deletes the temporary recording from your phone after transcription or
+cancellation. The transcript stays in your draft until you send the message to the agent.
 
-To use [whisper.cpp](#dictate-with-whispercpp) instead, turn on **Use whisper.cpp on the
-environment** in **Settings → Microphone**. Your recording then goes to the thread's
-environment, in threads whose environment has whisper.cpp dictation turned on. This also
-gives you a microphone on devices without on-device transcription. Other threads and
-scheduled task prompts keep using on-device transcription when the device supports it.
+To use [whisper.cpp](./voice-input.md#dictate-with-whispercpp) instead, turn on **Use
+whisper.cpp on the environment** in **Settings → Voice**. Your recording then goes to the
+thread's environment, in threads whose environment has whisper.cpp dictation turned on. This
+also gives you a microphone on devices without on-device transcription. Other threads and
+scheduled task prompts keep using your **Transcribe on** choice.
 
 ## Queued messages
 
@@ -308,6 +282,12 @@ Provider commands must start the message to run. T3 Code commands such as
 
 Send `/compact` in an existing conversation to reduce context usage when the
 provider supports it, even with the context meter turned off.
+
+Send `/clear` on its own, or pick it from the slash menu, to start a fresh session
+in the same thread. Your next message goes to a new provider session that doesn't see the
+earlier messages, and the thread marks where it began with **New session**.
+Earlier messages and diffs stay in the thread. Dismiss the notice above the
+composer to keep the current session instead.
 
 On web and desktop, turn on **Settings → Labs → Legacy → Context
 window indicator (legacy)** to see context usage. The meter is off by default

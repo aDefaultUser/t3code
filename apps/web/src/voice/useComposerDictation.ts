@@ -1,5 +1,5 @@
 import {
-  createEnvironmentVoiceTranscriber,
+  createWhisperCppTranscriber,
   createVoiceRequestRunner,
   VoiceInputController,
   type VoiceInputState,
@@ -29,7 +29,7 @@ function createComposerDictation(initial: ComposerDictationInput) {
   const capture = createBrowserVoiceRecorder((status) => {
     void controller.handleRecorderStatus(status);
   });
-  const transcriber = createEnvironmentVoiceTranscriber({
+  const transcriber = createWhisperCppTranscriber({
     getPrepared: () => readPreparedConnection(input.environmentId),
     run: createVoiceRequestRunner(appAtomRegistry, connectionAtomRuntime),
     readPcm: (uri) => capture.readPcm(uri),

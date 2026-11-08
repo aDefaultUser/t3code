@@ -1,11 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
-import {
-  AudioModule,
-  AudioQuality,
-  IOSOutputFormat,
-  RecordingPresets,
-  type RecordingStatus,
-} from "expo-audio";
+import { AudioModule, RecordingPresets, type RecordingStatus } from "expo-audio";
 import { File } from "expo-file-system";
 import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
 import { useSyncExternalStore } from "react";
@@ -19,15 +13,16 @@ import {
   preferredMicrophoneInput,
   rememberMicrophones,
 } from "../../lib/microphonePriority";
-import { getLocalVoiceTranscriber, readRecordingPcm } from "../../native/voiceTranscription";
+import { getLocalVoiceTranscriber } from "../../native/voiceTranscription";
+import { createVoiceRecorder } from "../../native/voiceRecorder";
 import { connectionAtomRuntime } from "../../connection/runtime";
 import { serverEnvironment } from "../../state/server";
 import { environmentSession } from "../../state/session";
 import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
 import { getNativeShowcaseScene } from "../showcase/nativeShowcaseScene";
 import {
-  createEnvironmentVoiceTranscriber,
   createVoiceRequestRunner,
+  createWhisperCppTranscriber,
   voiceInputBlocksSubmission,
   type VoiceTranscriber,
 } from "@t3tools/client-runtime/voice-input";
@@ -37,6 +32,11 @@ import { createLazyVoiceRecorder } from "./lazyVoiceRecorder";
 import { VOICE_WAVEFORM_SAMPLE_COUNT } from "./voiceInputMetering";
 import { VoiceInputSession } from "./voiceInputSession";
 import { createVoiceRecordingPermission } from "./voiceRecordingPermission";
+import {
+  decodeVoiceRecording,
+  hasEnvironmentVoiceCapture,
+  voiceRouteAtom,
+} from "./voiceDestination";
 import { makePermissionStatusAtom } from "../../lib/permissionStatusAtom";
 import {
   acquireAudioSession,
@@ -54,20 +54,6 @@ const VOICE_RECORDING_OPTIONS = {
   bitRate: RecordingPresets.HIGH_QUALITY.bitRate,
   isMeteringEnabled: true,
   ...(Platform.OS === "ios" ? IOS_RECORDING_OPTIONS : ANDROID_RECORDING_OPTIONS),
-};
-
-// iOS can record whisper.cpp's format directly; Android records AAC and decodes natively.
-const IOS_WHISPER_RECORDING_OPTIONS = {
-  extension: ".wav",
-  sampleRate: 16_000,
-  numberOfChannels: 1,
-  bitRate: 256_000,
-  isMeteringEnabled: true,
-  outputFormat: IOSOutputFormat.LINEARPCM,
-  audioQuality: AudioQuality.MAX,
-  linearPCMBitDepth: 16 as const,
-  linearPCMIsBigEndian: false,
-  linearPCMIsFloat: false,
 };
 
 function keepScreenAwake(tag: string): () => void {
@@ -89,8 +75,9 @@ export const localVoiceTranscriberAtom = makePermissionStatusAtom<
   read: () => getLocalVoiceTranscriber().catch(() => null),
 }).pipe(Atom.keepAlive);
 
-// Each foreground re-probe yields a new transcriber; composers re-render only when availability flips.
-const localVoiceInputAvailableAtom = Atom.make((get) => {
+const voiceInputAvailableAtom = Atom.make((get) => {
+  const route = get(voiceRouteAtom);
+  if (route) return route.transcriber !== null;
   const transcriber = get(localVoiceTranscriberAtom);
   return transcriber !== null && transcriber !== "checking";
 });
@@ -101,6 +88,7 @@ const whisperEnabledAtom = Atom.family((environmentId: EnvironmentId) =>
     const preferences = get(mobilePreferencesAtom);
     const config = get(serverEnvironment.configValueAtom(environmentId));
     return (
+      hasEnvironmentVoiceCapture &&
       AsyncResult.isSuccess(preferences) &&
       preferences.value.voiceTranscriptionEngine === "whisper-cpp" &&
       config?.environment.capabilities.whisperCppTranscription === true &&
@@ -125,7 +113,6 @@ const voiceInputAtom = Atom.make((get) => {
   // Mounted so the recorder can read and remember microphones synchronously.
   get.mount(mobilePreferencesAtom);
   get.mount(updateMobilePreferencesAtom);
-  get.mount(localVoiceTranscriberAtom);
   const audioLevels = makeMutable<ReadonlyArray<number>>(
     Array<number>(VOICE_WAVEFORM_SAMPLE_COUNT).fill(0),
   );
@@ -135,13 +122,13 @@ const voiceInputAtom = Atom.make((get) => {
     void session.controller.appMovedToBackground();
   });
   const whisperTranscriber = (environmentId: EnvironmentId) =>
-    createEnvironmentVoiceTranscriber({
+    createWhisperCppTranscriber({
       getPrepared: () =>
         Option.getOrNull(
           registry.get(environmentSession.preparedConnectionValueAtom(environmentId)),
         ),
       run: createVoiceRequestRunner(registry, connectionAtomRuntime),
-      readPcm: readRecordingPcm,
+      readPcm: async (uri) => new Uint8Array(await decodeVoiceRecording(uri)),
       deviceLocale: () => Intl.DateTimeFormat().resolvedOptions().locale,
     });
   // Re-read here so a retry after opting out never uploads to the environment.
@@ -152,16 +139,15 @@ const voiceInputAtom = Atom.make((get) => {
       ? session.whisperEnvironmentId
       : null;
   };
-  let recorderUsesWhisper = false;
   const recorder = createLazyVoiceRecorder({
-    create: () => {
-      recorderUsesWhisper = activeWhisperEnvironmentId() !== null;
-      return new AudioModule.AudioRecorder(
-        recorderUsesWhisper && Platform.OS === "ios"
-          ? IOS_WHISPER_RECORDING_OPTIONS
-          : VOICE_RECORDING_OPTIONS,
-      );
-    },
+    getDestination: () =>
+      activeWhisperEnvironmentId() === null && registry.get(voiceRouteAtom) === null
+        ? "local"
+        : "environment",
+    create: (destination) =>
+      destination === "local"
+        ? createVoiceRecorder(VOICE_RECORDING_OPTIONS)
+        : new AudioModule.AudioRecorder(VOICE_RECORDING_OPTIONS),
     onStatus: (status: RecordingStatus) => {
       session.controller.handleRecorderStatus({
         isFinished: status.isFinished,
@@ -189,15 +175,15 @@ const voiceInputAtom = Atom.make((get) => {
   const session: VoiceInputSession = new VoiceInputSession({
     recorder,
     getTranscriber: () => {
-      const environmentId = activeWhisperEnvironmentId();
-      if (environmentId !== null) return whisperTranscriber(environmentId);
+      const whisperEnvironmentId = activeWhisperEnvironmentId();
+      if (whisperEnvironmentId !== null) return whisperTranscriber(whisperEnvironmentId);
+      const route = registry.get(voiceRouteAtom);
+      if (route) return route.transcriber;
       const transcriber = registry.get(localVoiceTranscriberAtom);
       return transcriber === "checking" ? null : transcriber;
     },
     requestPermission: permission.requestPermission,
     configureRecording: async () => {
-      // Recording options are fixed at construction, so a change of engine needs a new recorder.
-      if (recorderUsesWhisper !== (activeWhisperEnvironmentId() !== null)) recorder.release();
       const token = acquireAudioSession("recording");
       audioToken = token;
       try {
@@ -221,6 +207,7 @@ const voiceInputAtom = Atom.make((get) => {
     publishAudioLevels: (levels) => audioLevels.set(levels),
     keepAwake: () => keepScreenAwake(`voice-input:${++keepAwakeSequence}`),
   });
+  get.subscribe(voiceRouteAtom, () => session.controller.cancel());
   get.addFinalizer(() => {
     permission.dispose();
     session.dispose();
@@ -231,7 +218,7 @@ const voiceInputAtom = Atom.make((get) => {
 
 export function useGlobalVoiceInput() {
   const { session, audioLevels } = useAtomValue(voiceInputAtom);
-  const isTranscriberAvailable = useAtomValue(localVoiceInputAvailableAtom);
+  const isTranscriberAvailable = useAtomValue(voiceInputAvailableAtom);
   const snapshot = useSyncExternalStore(session.subscribe, session.getSnapshot);
   return {
     ...snapshot,

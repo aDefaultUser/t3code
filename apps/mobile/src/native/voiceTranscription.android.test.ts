@@ -5,16 +5,16 @@ const mocks = vi.hoisted(() => ({
   prepare: vi.fn<(id: number) => Promise<{ locale: string; mode: number }>>(),
   transcribe: vi.fn<(id: number, uri: string, locale: string, mode: number) => Promise<string>>(),
   cancel: vi.fn<(id: number) => Promise<void>>(),
-  decodeRecordingToPcm: vi.fn<(id: number, uri: string) => Promise<string>>(),
-  readFile: vi.fn<(uri: string) => Promise<ArrayBuffer>>(),
-  deleteFile: vi.fn<(uri: string) => void>(),
+  LiveVoiceRecorder: class {
+    readonly uri = "file:///live.pcm";
+  },
 }));
 
-vi.mock("expo-file-system", () => ({
-  File: class {
-    constructor(private readonly uri: string) {}
-    arrayBuffer = () => mocks.readFile(this.uri);
-    delete = () => mocks.deleteFile(this.uri);
+vi.mock("react-native", () => ({
+  Platform: {
+    get Version() {
+      return 31;
+    },
   },
 }));
 
@@ -26,22 +26,16 @@ import {
   VoiceInputController,
   resetVoiceInputGlobalsForTests,
 } from "../../../../packages/client-runtime/src/voice-input/controller";
+import { Platform } from "react-native";
 
-import { getLocalVoiceTranscriber, readRecordingPcm } from "./voiceTranscription.android";
+import { createLiveVoiceRecorder, getLocalVoiceTranscriber } from "./voiceTranscription.android";
 
-it("reads the decoded recording and leaves no copy behind, even if reading fails", async () => {
-  vi.resetAllMocks();
-  const options = { signal: new AbortController().signal };
-  mocks.decodeRecordingToPcm.mockResolvedValue("file:///cache/upload.pcm");
-  mocks.readFile.mockResolvedValueOnce(new Uint8Array([1, 0]).buffer);
-  expect([...(await readRecordingPcm("file:///cache/take.m4a", options))]).toEqual([1, 0]);
-  expect(mocks.decodeRecordingToPcm.mock.calls[0]?.[1]).toBe("file:///cache/take.m4a");
-  expect(mocks.deleteFile).toHaveBeenCalledWith("file:///cache/upload.pcm");
-
-  mocks.deleteFile.mockClear();
-  mocks.readFile.mockRejectedValueOnce(new Error("read failed"));
-  await expect(readRecordingPcm("file:///cache/take.m4a", options)).rejects.toThrow("read failed");
-  expect(mocks.deleteFile).toHaveBeenCalledWith("file:///cache/upload.pcm");
+it.each([
+  [30, null],
+  [31, "file:///live.pcm"],
+] as const)("offers live recording only on supported Android versions (%s)", (version, uri) => {
+  using _version = vi.spyOn(Platform, "Version", "get").mockReturnValue(version);
+  expect(createLiveVoiceRecorder()?.uri ?? null).toBe(uri);
 });
 
 it.each([false, true])(
@@ -84,10 +78,11 @@ it.each([
     selection: { start: 16, end: 16 },
     revision: 1,
   };
+  const prepareToRecordAsync = vi.fn(async () => {});
   const controller = new VoiceInputController({
     recorder: {
       uri: "file:///acceptance.m4a",
-      prepareToRecordAsync: async () => {},
+      prepareToRecordAsync,
       record: () => {},
       stop: async () => {},
     },
@@ -107,4 +102,5 @@ it.each([
   expect(commit).not.toHaveBeenCalled();
   expect(draft.text).toBe("Preserved draft.");
   expect(controller.currentState.error).toMatch(expected);
+  expect(prepareToRecordAsync).toHaveBeenCalledTimes(phase === "preparation" ? 0 : 1);
 });

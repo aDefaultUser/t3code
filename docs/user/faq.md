@@ -73,11 +73,11 @@ No. Your code and prompts go from your machine to your provider (Anthropic, Open
 
 ## Worktrees are eating my disk. How do I clean them up?
 
-Open **Settings > Storage** and turn on automatic worktree cleanup. You can also run it now from there. Worktrees add up fast. One user cleared 500 GB. [Storage cleanup](./project-settings.md#storage-cleanup)
+Open **Settings → Worktrees → Cleanup** and turn on automatic worktree cleanup. You can also run it now from there. Worktrees add up fast. One user cleared 500 GB. [Storage cleanup](./project-settings.md#storage-cleanup)
 
 ## Is there voice input?
 
-Yes. On a supported iPhone or Android device, tap the mic in the composer, talk, check the text, then send. On web and desktop, set up whisper.cpp on your environment first. [Voice input on mobile](./composer.md#voice-input-on-mobile) and [Dictate with whisper.cpp](./composer.md#dictate-with-whispercpp)
+Yes. On iPhone and Android, dictation uses on-device speech by default; you can opt in to a paired environment instead. Web and desktop require you to choose an environment first. The transcript goes into your draft for review. See [Voice input](./voice-input.md). You can also [dictate with your own whisper.cpp](./voice-input.md#dictate-with-whispercpp) on the environment.
 
 ## Does it work on Windows, Mac, and Linux?
 

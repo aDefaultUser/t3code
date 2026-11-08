@@ -7,7 +7,7 @@ import {
   type AuthEnvironmentScope,
   EnvironmentAuthenticatedAuth,
   EnvironmentAuthenticatedPrincipal,
-  EnvironmentVoiceHttpApi,
+  EnvironmentWhisperCppHttpApi,
   VOICE_PCM_MAX_BYTES,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -40,7 +40,7 @@ const serve = (
       ),
     );
     const routes = HttpApiBuilder.layer(
-      HttpApi.make("environment").add(EnvironmentVoiceHttpApi),
+      HttpApi.make("environment").add(EnvironmentWhisperCppHttpApi),
     ).pipe(
       Layer.provide(VoiceHttp.layer),
       Layer.provide(auth),
@@ -49,7 +49,7 @@ const serve = (
     yield* Layer.build(HttpRouter.serve(routes, { disableLogger: true, disableListenLog: true }));
     const address = (yield* HttpServer.HttpServer).address as NetAddress.InetAddress;
     const host = address._tag === "InetAddressV6" ? "[::1]" : "127.0.0.1";
-    return `http://${host}:${address.port}/api/voice/transcribe`;
+    return `http://${host}:${address.port}/api/voice/whisper-cpp/transcribe`;
   });
 
 const post = (url: string, body: Uint8Array<ArrayBuffer> | ReadableStream<Uint8Array>) =>

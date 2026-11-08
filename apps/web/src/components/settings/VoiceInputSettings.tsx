@@ -1,6 +1,6 @@
 import {
   createVoiceRequestRunner,
-  getEnvironmentVoiceStatus,
+  getWhisperCppStatus,
   voiceIssueMessage,
 } from "@t3tools/client-runtime/voice-input";
 import type { EnvironmentId, EnvironmentVoiceStatus, WhisperCppSettings } from "@t3tools/contracts";
@@ -66,7 +66,7 @@ function WhisperCppStatus(props: { readonly environmentId: EnvironmentId }) {
       return;
     }
     const controller = new AbortController();
-    runStatusRequest(getEnvironmentVoiceStatus(prepared), { signal: controller.signal }).then(
+    runStatusRequest(getWhisperCppStatus(prepared), { signal: controller.signal }).then(
       (next) => {
         if (!controller.signal.aborted) setStatus(next);
       },

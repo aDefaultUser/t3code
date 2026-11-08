@@ -1,7 +1,7 @@
 import {
   AuthOrchestrationOperateScope,
   EnvironmentHttpApi,
-  EnvironmentVoiceBodyLimit,
+  EnvironmentWhisperCppBodyLimit,
   VOICE_PCM_MAX_BYTES,
 } from "@t3tools/contracts";
 import * as ByteSize from "effect/ByteSize";
@@ -18,7 +18,7 @@ import {
 } from "../auth/http.ts";
 import * as WhisperCpp from "./WhisperCpp.ts";
 
-const bodyLimit = Layer.succeed(EnvironmentVoiceBodyLimit, (effect) =>
+const bodyLimit = Layer.succeed(EnvironmentWhisperCppBodyLimit, (effect) =>
   Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
     if (Number(request.headers["content-length"]) > VOICE_PCM_MAX_BYTES) {
@@ -32,13 +32,13 @@ const bodyLimit = Layer.succeed(EnvironmentVoiceBodyLimit, (effect) =>
 
 export const layer = HttpApiBuilder.group(
   EnvironmentHttpApi,
-  "voice",
+  "whisperCpp",
   Effect.fnUntraced(function* (handlers) {
     const whisperCpp = yield* WhisperCpp.WhisperCpp;
     return handlers
       .handle(
         "status",
-        Effect.fn("environment.voice.status")(function* (args) {
+        Effect.fn("environment.whisperCpp.status")(function* (args) {
           yield* annotateEnvironmentRequest(args.endpoint.name);
           yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
           return yield* whisperCpp.status;
@@ -46,7 +46,7 @@ export const layer = HttpApiBuilder.group(
       )
       .handle(
         "transcribe",
-        Effect.fn("environment.voice.transcribe")(function* (args) {
+        Effect.fn("environment.whisperCpp.transcribe")(function* (args) {
           yield* annotateEnvironmentRequest(args.endpoint.name);
           yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
           const text = yield* whisperCpp.transcribe(args.payload).pipe(

@@ -1,175 +1,302 @@
-import type { EnvironmentVoiceIssue } from "@t3tools/contracts";
-import type * as Context from "effect/Context";
+import { encodeSpeechPcmRequest } from "@t3tools/shared/speech";
 import * as Effect from "effect/Effect";
-import type { HttpClient } from "effect/http";
-import { AsyncResult, type Atom, type AtomRegistry } from "effect/reactivity";
+import * as Redacted from "effect/Redacted";
+import * as Schema from "effect/Schema";
+import { CloudSpeechError, SPEECH_STREAM_PATH } from "@t3tools/contracts";
+import type {
+  CloudSpeechModelId,
+  CloudSpeechProvider,
+  SettingsSecretValue,
+  SpeechAcceleration,
+  SpeechModelUnloadTimeout,
+  SpeechTranscriptionOptions,
+  SpeechPostProcessingOptions,
+} from "@t3tools/contracts";
 
 import * as RemoteEnvironmentAuthorization from "../authorization/service.ts";
 import type { PreparedConnection } from "../connection/model.ts";
 import * as ManagedRelay from "../relay/managedRelay.ts";
-import { executeAuthenticatedEnvironmentHttpRequest } from "../state/environmentHttpAuth.ts";
 import {
-  throwIfVoiceTranscriptionAborted,
-  VoiceTranscriptionError,
-  type VoiceTranscriber,
-  type VoiceTranscriptionOptions,
-} from "./transcription.ts";
+  makeEnvironmentHttpApiGroupClient,
+  makeEnvironmentHttpApiUrlBuilder,
+} from "../rpc/http.ts";
+import { executeAuthenticatedEnvironmentHttpRequest } from "../state/environmentHttpAuth.ts";
+import { VoiceTranscriptionError } from "./transcription.ts";
 
-const STATUS_TIMEOUT_MS = 10_000;
-// Outlasts the server's own limit so its error reaches the client instead of a client timeout.
-const TRANSCRIBE_TIMEOUT_MS = 16 * 60_000;
+const INFERENCE_OR_DOWNLOAD_TIMEOUT_MS = 30 * 60_000;
+const isCloudSpeechError = Schema.is(CloudSpeechError);
+type EnvironmentApiClient<G extends "voice" | "auth"> = Effect.Success<
+  ReturnType<typeof makeEnvironmentHttpApiGroupClient<G>>
+>;
 
-export const getEnvironmentVoiceStatus = Effect.fn("clientRuntime.voiceInput.status")(function* (
-  prepared: PreparedConnection,
-) {
-  return yield* executeAuthenticatedEnvironmentHttpRequest({
-    group: "voice",
-    prepared,
-    signer: yield* Effect.serviceOption(ManagedRelay.ManagedRelayDpopSigner),
-    remoteAuthorization: yield* Effect.serviceOption(
-      RemoteEnvironmentAuthorization.RemoteEnvironmentAuthorization,
-    ),
-    method: "GET",
-    url: (urls) => urls.status(),
-    timeoutMs: STATUS_TIMEOUT_MS,
-    request: ({ client, headers }) => client.status({ headers }),
-  });
-});
-
-const transcribeEnvironmentPcm = Effect.fn("clientRuntime.voiceInput.transcribe")(function* (
-  prepared: PreparedConnection,
-  pcm: Uint8Array<ArrayBuffer>,
-) {
-  return yield* executeAuthenticatedEnvironmentHttpRequest({
-    group: "voice",
-    prepared,
-    signer: yield* Effect.serviceOption(ManagedRelay.ManagedRelayDpopSigner),
-    remoteAuthorization: yield* Effect.serviceOption(
-      RemoteEnvironmentAuthorization.RemoteEnvironmentAuthorization,
-    ),
-    method: "POST",
-    url: (urls) => urls.transcribe(),
-    timeoutMs: TRANSCRIBE_TIMEOUT_MS,
-    request: ({ client, headers }) => client.transcribe({ headers, payload: pcm }),
-  });
-});
-
-export function voiceIssueMessage(issue: EnvironmentVoiceIssue): string {
-  switch (issue) {
-    case "disabled":
-      return "whisper.cpp dictation is turned off on this environment.";
-    case "binary-missing":
-      return "whisper.cpp was not found on this environment. Install it or set its path in voice input settings.";
-    case "model-missing":
-      return "The whisper.cpp model file was not found on this environment. Check its path in voice input settings.";
-  }
-}
-
-function environmentFailureMessage(error: {
-  readonly _tag: string;
-  readonly reason?: unknown;
-  readonly status?: unknown;
+const request = Effect.fn("clientRuntime.voiceInput.environmentRequest")(function* <
+  A,
+  E,
+  G extends "voice" | "auth",
+>(input: {
+  readonly group: G;
+  readonly prepared: PreparedConnection;
+  readonly method: "GET" | "POST" | "DELETE";
+  readonly timeoutMs?: number;
+  readonly canSend?: () => boolean;
+  readonly path: (urls: ReturnType<typeof makeEnvironmentHttpApiUrlBuilder>[G]) => string;
+  readonly run: (input: {
+    readonly client: EnvironmentApiClient<G>;
+    readonly headers: { readonly authorization?: string; readonly dpop?: string };
+  }) => Effect.Effect<A, E>;
 }) {
-  // Cloudflare's answer when the origin sends nothing for about two minutes.
-  if (error.status === 524) {
-    return "T3 Connect stopped waiting for whisper.cpp. Use a smaller model or a shorter recording.";
-  }
-  switch (error._tag) {
-    case "EnvironmentScopeRequiredError":
-      return "This connection is not allowed to dictate on this environment.";
-    case "RemoteEnvironmentAuthTimeoutError":
-      return "whisper.cpp took too long to answer.";
-    case "RemoteEnvironmentAuthFetchError":
-      return "Could not reach this environment to transcribe the recording.";
-  }
-  switch (error.reason) {
-    case "voice_unavailable":
-      return "whisper.cpp is not set up on this environment. Check voice input settings.";
-    case "invalid_audio":
-      return "The environment could not accept this recording.";
-  }
-  return "whisper.cpp could not transcribe this recording. The environment's logs have the details.";
-}
+  return yield* executeAuthenticatedEnvironmentHttpRequest({
+    group: input.group,
+    prepared: input.prepared,
+    signer: yield* Effect.serviceOption(ManagedRelay.ManagedRelayDpopSigner),
+    remoteAuthorization: yield* Effect.serviceOption(
+      RemoteEnvironmentAuthorization.RemoteEnvironmentAuthorization,
+    ),
+    method: input.method,
+    url: input.path,
+    timeoutMs: input.timeoutMs ?? 30_000,
+    // Audio and credentials never follow a redirect to another host.
+    requestInit: { redirect: "error" },
+    request: (args) =>
+      Effect.suspend(() => (input.canSend?.() === false ? Effect.interrupt : input.run(args))),
+  });
+});
 
-const toTranscriptionError =
-  (code: "preparation-failed" | "transcription-failed") =>
-  (error: Parameters<typeof environmentFailureMessage>[0]) =>
-    new VoiceTranscriptionError(code, environmentFailureMessage(error), { cause: error });
+export const getEnvironmentSpeechStatus = (prepared: PreparedConnection) =>
+  request({
+    group: "voice",
+    prepared,
+    method: "GET",
+    path: (urls) => urls.status(),
+    run: ({ client, headers }) => client.status({ headers }),
+  });
 
-// Requiring the authorization service here makes a runtime without it a type error. It is only
-// read optionally below, so otherwise relay requests would fail at runtime on every DPoP connection.
-type VoiceRequestServices =
-  | HttpClient.HttpClient
-  | RemoteEnvironmentAuthorization.RemoteEnvironmentAuthorization;
+export const getCloudSpeechKeys = (prepared: PreparedConnection) =>
+  request({
+    group: "voice",
+    prepared,
+    method: "GET",
+    path: (urls) => urls.cloudKeys(),
+    run: ({ client, headers }) => client.cloudKeys({ headers }),
+  });
 
-export type VoiceRequestRunner = <A, E>(
-  effect: Effect.Effect<A, E, VoiceRequestServices>,
-  options: VoiceTranscriptionOptions,
-) => Promise<A>;
+export const getCloudSpeechModels = (prepared: PreparedConnection) =>
+  request({
+    group: "voice",
+    prepared,
+    method: "GET",
+    path: (urls) => urls.cloudModels(),
+    run: ({ client, headers }) => client.cloudModels({ headers }),
+  });
 
-/** Runs requests on the application's connection runtime, cancelling through the abort signal. */
-export function createVoiceRequestRunner<R extends VoiceRequestServices, ER>(
-  registry: AtomRegistry.AtomRegistry,
-  runtime: Atom.AtomRuntime<R, ER>,
-): VoiceRequestRunner {
-  return (effect, options) => {
-    const context = registry.get(runtime);
-    if (!AsyncResult.isSuccess(context)) {
-      return Promise.reject(
-        new VoiceTranscriptionError("unavailable", "The connection is still starting."),
-      );
-    }
-    return Effect.runPromiseWith(context.value as Context.Context<VoiceRequestServices>)(
-      effect,
-      options,
-    );
-  };
-}
+export const requireCloudSpeechKey = (
+  prepared: PreparedConnection,
+  provider: CloudSpeechProvider,
+) =>
+  getCloudSpeechKeys(prepared).pipe(
+    Effect.flatMap((keys) =>
+      keys[provider]
+        ? Effect.void
+        : Effect.fail(
+            new VoiceTranscriptionError({
+              code: "unavailable",
+              message: new CloudSpeechError({ provider, reason: "missing-key" }).message,
+            }),
+          ),
+    ),
+  );
 
-export function createEnvironmentVoiceTranscriber(input: {
-  readonly getPrepared: () => PreparedConnection | null;
-  readonly run: VoiceRequestRunner;
-  readonly readPcm: (
-    uri: string,
-    options: VoiceTranscriptionOptions,
-  ) => Promise<Uint8Array<ArrayBuffer>>;
-  readonly deviceLocale: () => string;
-}): VoiceTranscriber {
-  const connection = () => {
-    const prepared = input.getPrepared();
-    if (prepared) return prepared;
-    throw new VoiceTranscriptionError("unavailable", "This environment is not connected.");
-  };
+export const setCloudSpeechKey = (
+  prepared: PreparedConnection,
+  provider: CloudSpeechProvider,
+  key: SettingsSecretValue | null,
+) =>
+  request({
+    group: "voice",
+    prepared,
+    method: "POST",
+    path: (urls) => urls.setCloudKey({ params: { provider } }),
+    run: ({ client, headers }) =>
+      client.setCloudKey({
+        headers,
+        params: { provider },
+        payload: { key: typeof key === "string" ? Redacted.make(key) : key },
+      }),
+  });
 
-  return {
-    prepare: async (options) => {
-      throwIfVoiceTranscriptionAborted(options.signal);
-      const status = await input.run(
-        getEnvironmentVoiceStatus(connection()).pipe(
-          Effect.mapError(toTranscriptionError("preparation-failed")),
-        ),
-        options,
-      );
-      throwIfVoiceTranscriptionAborted(options.signal);
-      if (status.issue !== null) {
-        throw new VoiceTranscriptionError("unavailable", voiceIssueMessage(status.issue));
-      }
-      return {
-        locale: status.language === "auto" ? input.deviceLocale() : status.language,
-        transcribe: async (uri, transcribeOptions) => {
-          const pcm = await input.readPcm(uri, transcribeOptions);
-          throwIfVoiceTranscriptionAborted(transcribeOptions.signal);
-          if (pcm.byteLength === 0) return "";
-          const { text } = await input.run(
-            transcribeEnvironmentPcm(connection(), pcm).pipe(
-              Effect.mapError(toTranscriptionError("transcription-failed")),
-            ),
-            transcribeOptions,
-          );
-          throwIfVoiceTranscriptionAborted(transcribeOptions.signal);
-          return text;
-        },
-      };
+export const transcribeCloudPcm = (
+  prepared: PreparedConnection,
+  provider: CloudSpeechProvider,
+  pcm: Uint8Array,
+  options: SpeechTranscriptionOptions,
+  canSend: () => boolean,
+  model?: CloudSpeechModelId,
+) => {
+  const query = model === undefined ? {} : { model };
+  return request({
+    group: "voice",
+    prepared,
+    method: "POST",
+    canSend,
+    timeoutMs: 130_000,
+    path: (urls) => urls.transcribeCloud({ params: { provider }, query }),
+    run: ({ client, headers }) =>
+      client.transcribeCloud({
+        headers,
+        params: { provider },
+        query,
+        payload: encodeSpeechPcmRequest(pcm, options),
+      }),
+  }).pipe(
+    Effect.mapError((error) =>
+      error._tag === "RemoteEnvironmentAuthFetchError" && isCloudSpeechError(error.cause)
+        ? new VoiceTranscriptionError({
+            code: "transcription-failed",
+            message: error.cause.message,
+          })
+        : error,
+    ),
+  );
+};
+
+export const getEnvironmentSpeechStreamUrl = (prepared: PreparedConnection) => {
+  let endpoint = prepared.httpBaseUrl;
+  return request({
+    group: "auth",
+    prepared,
+    method: "POST",
+    path: (urls) => {
+      endpoint = urls.webSocketTicketFor({ params: { use: "media" } });
+      return endpoint;
     },
-  };
-}
+    run: ({ client, headers }) => client.webSocketTicketFor({ headers, params: { use: "media" } }),
+  }).pipe(
+    Effect.map(({ ticket }) => {
+      const url = new URL(SPEECH_STREAM_PATH, endpoint);
+      url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+      url.searchParams.set("wsTicket", Redacted.value(ticket));
+      return url.toString();
+    }),
+  );
+};
+
+export const getEnvironmentSpeechModels = (
+  prepared: PreparedConnection,
+  includeBenchmarks = false,
+) => {
+  const query = includeBenchmarks ? { benchmarks: "1" as const } : {};
+  return request({
+    group: "voice",
+    prepared,
+    method: "GET",
+    path: (urls) => urls.models({ query }),
+    run: ({ client, headers }) => client.models({ headers, query }),
+  });
+};
+
+export const downloadEnvironmentSpeechModel = (prepared: PreparedConnection, modelId: string) =>
+  request({
+    group: "voice",
+    prepared,
+    method: "POST",
+    path: (urls) => urls.downloadModel(),
+    timeoutMs: INFERENCE_OR_DOWNLOAD_TIMEOUT_MS,
+    run: ({ client, headers }) => client.downloadModel({ headers, payload: { modelId } }),
+  });
+
+export const selectEnvironmentSpeechModel = (prepared: PreparedConnection, modelId: string) =>
+  request({
+    group: "voice",
+    prepared,
+    method: "POST",
+    path: (urls) => urls.selectModel(),
+    run: ({ client, headers }) => client.selectModel({ headers, payload: { modelId } }),
+  });
+
+export const cancelEnvironmentSpeechModelDownload = (
+  prepared: PreparedConnection,
+  modelId: string,
+) =>
+  request({
+    group: "voice",
+    prepared,
+    method: "POST",
+    path: (urls) => urls.cancelModelDownload(),
+    run: ({ client, headers }) => client.cancelModelDownload({ headers, payload: { modelId } }),
+  });
+
+export const transcribeEnvironmentPcm = (
+  prepared: PreparedConnection,
+  pcm: Uint8Array,
+  options: SpeechTranscriptionOptions,
+  canSend: () => boolean,
+) =>
+  request({
+    group: "voice",
+    prepared,
+    method: "POST",
+    path: (urls) => urls.transcribe(),
+    canSend,
+    timeoutMs: INFERENCE_OR_DOWNLOAD_TIMEOUT_MS,
+    run: ({ client, headers }) =>
+      client.transcribe({
+        headers,
+        payload: encodeSpeechPcmRequest(pcm, options),
+      }),
+  });
+
+/** Sends the transcript and draft context to a provider on `prepared`; a separate opt-in. */
+export const postProcessEnvironmentTranscript = (
+  prepared: PreparedConnection,
+  transcript: string,
+  draft: {
+    readonly text: string;
+    readonly selection: { readonly start: number; readonly end: number };
+  },
+  options: SpeechPostProcessingOptions,
+  canSend: () => boolean,
+) =>
+  request({
+    group: "voice",
+    prepared,
+    method: "POST",
+    path: (urls) => urls.postProcess(),
+    canSend,
+    timeoutMs: INFERENCE_OR_DOWNLOAD_TIMEOUT_MS,
+    run: ({ client, headers }) =>
+      client.postProcess({ headers, payload: { transcript, draft, options } }),
+  });
+
+export const updateEnvironmentSpeechAcceleration = (
+  prepared: PreparedConnection,
+  acceleration: SpeechAcceleration,
+) =>
+  request({
+    group: "voice",
+    prepared,
+    method: "POST",
+    path: (urls) => urls.updateAcceleration(),
+    run: ({ client, headers }) => client.updateAcceleration({ headers, payload: { acceleration } }),
+  });
+
+export const updateEnvironmentSpeechModelUnloadTimeout = (
+  prepared: PreparedConnection,
+  timeout: SpeechModelUnloadTimeout,
+) =>
+  request({
+    group: "voice",
+    prepared,
+    method: "POST",
+    path: (urls) => urls.updateModelUnloadTimeout(),
+    run: ({ client, headers }) =>
+      client.updateModelUnloadTimeout({ headers, payload: { timeout } }),
+  });
+
+export const removeEnvironmentSpeechModel = (prepared: PreparedConnection, modelId: string) =>
+  request({
+    group: "voice",
+    prepared,
+    method: "POST",
+    path: (urls) => urls.removeModel(),
+    run: ({ client, headers }) => client.removeModel({ headers, payload: { modelId } }),
+  });

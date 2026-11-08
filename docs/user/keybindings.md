@@ -5,6 +5,11 @@ also lists the command IDs and defaults available in your version.
 
 ## Composer controls
 
+`mod+shift+d` starts dictation in the focused editor, or the composer, and finishes it on the next press;
+`Esc` discards the recording. Change the chord under **Composer: Start or Finish
+Dictation**, and the hold or toggle behavior in **Settings → Voice**. See
+[Voice input](./voice-input.md).
+
 In **Settings → Chat → Send shortcut**, choose whether Enter sends, requires
 `mod+Enter` for multiline prompts, or always requires `mod+Enter`. `Shift+Enter`
 inserts a new line. This applies to the web and desktop composer at desktop widths.
@@ -30,8 +35,8 @@ workspace, and `mod+shift+g` for the Git branch. The workspace menu includes the
 current checkout, a new worktree, and the previous worktree when available.
 Use `mod+shift+l` to reuse the previous worktree directly.
 
-Use `mod+Alt+V` to start and finish [dictating](./composer.md#dictate-with-whispercpp) once
-whisper.cpp is set up.
+Use `mod+Alt+V` to start and finish [dictating with whisper.cpp](./voice-input.md#dictate-with-whispercpp)
+once it is set up.
 
 To change effort one step without opening the picker, bind
 **Composer: Increase Effort** and **Composer: Decrease Effort** in Keybindings.

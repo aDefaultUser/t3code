@@ -2,14 +2,17 @@
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
+import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 
 import * as Electron from "electron";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import * as DesktopEarlyElectronStartup from "./DesktopEarlyElectronStartup.ts";
+import { trimmedString } from "./DesktopConfig.ts";
 import { resolveDesktopAppBranding } from "./DesktopEnvironment.ts";
 import { renderUrlHandlerDesktopEntry } from "./DesktopLinuxUrlHandler.ts";
 import * as ElectronProtocol from "../electron/ElectronProtocol.ts";
@@ -49,10 +52,18 @@ export class DesktopPreReadyElectronOptions extends Context.Service<
   }
 >()("@t3tools/desktop/app/DesktopPreReadyPlatform/DesktopPreReadyElectronOptions") {}
 
+const LinuxDesktopEntryConfig = Config.all({
+  sideBySideAppData: trimmedString("T3CODE_DESKTOP_SIDE_BY_SIDE_APP_DATA"),
+  xdgDataHome: trimmedString("XDG_DATA_HOME"),
+  launcherPath: trimmedString("T3CODE_DESKTOP_LAUNCHER_PATH"),
+  appImagePath: trimmedString("APPIMAGE"),
+});
+
 /** @public */
 export const make = Effect.gen(function* () {
   const platform = yield* HostProcess.Platform;
   const homeDirectory = yield* HostProcess.HomeDirectory;
+  const linuxDesktopEntryConfig = yield* LinuxDesktopEntryConfig;
   return yield* Effect.sync((): DesktopPreReadyElectronOptions["Service"] => {
     const linuxPasswordStoreCommandLine =
       platform === "linux"
@@ -78,9 +89,13 @@ export const make = Effect.gen(function* () {
       try {
         const applicationsDir = NodePath.posix.join(
           // Local side-by-side build: keep this entry away from the installed app's.
-          process.env.T3CODE_DESKTOP_SIDE_BY_SIDE_APP_DATA?.trim() ||
-            process.env.XDG_DATA_HOME?.trim() ||
-            NodePath.posix.join(homeDirectory, ".local", "share"),
+          Option.getOrElse(
+            Option.orElse(
+              linuxDesktopEntryConfig.sideBySideAppData,
+              () => linuxDesktopEntryConfig.xdgDataHome,
+            ),
+            () => NodePath.posix.join(homeDirectory, ".local", "share"),
+          ),
           "applications",
         );
         NodeFS.mkdirSync(applicationsDir, { recursive: true });
@@ -112,9 +127,12 @@ export const make = Effect.gen(function* () {
               appVersion: Electron.app.getVersion(),
             }).displayName,
             execTarget:
-              process.env.T3CODE_DESKTOP_LAUNCHER_PATH?.trim() ||
-              process.env.APPIMAGE?.trim() ||
-              process.execPath,
+              Option.getOrUndefined(
+                Option.orElse(
+                  linuxDesktopEntryConfig.launcherPath,
+                  () => linuxDesktopEntryConfig.appImagePath,
+                ),
+              ) ?? process.execPath,
             scheme: ElectronProtocol.getDesktopScheme(linux.isDevelopment),
             ...(iconPath === undefined ? {} : { iconPath }),
           }),

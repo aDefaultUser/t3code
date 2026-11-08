@@ -10,7 +10,7 @@ export function createComposerTypingGuardState() {
 }
 
 type TypingGuardEvent =
-  | { type: "requests"; requestIds: readonly string[]; now: number }
+  | { type: "requests"; requestIds: readonly string[]; dictating?: boolean; now: number }
   | { type: "type"; now: number }
   | { type: "focus" | "blur" | "send" | "idle" };
 
@@ -23,10 +23,11 @@ export function updateComposerTypingGuard(
       const seen = new Set(state.seen);
       const held = new Set([...state.held].filter((id) => event.requestIds.includes(id)));
       for (const id of event.requestIds) {
+        // A question replaces the draft being dictated, which would discard the recording.
         if (
           !seen.has(id) &&
-          state.focused &&
-          event.now - state.lastTypedAt < COMPOSER_TYPING_IDLE_MS
+          (event.dictating ||
+            (state.focused && event.now - state.lastTypedAt < COMPOSER_TYPING_IDLE_MS))
         ) {
           held.add(id);
         }

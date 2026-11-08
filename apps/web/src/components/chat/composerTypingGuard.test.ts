@@ -9,6 +9,17 @@ function typing() {
 }
 
 describe("composer typing guard", () => {
+  it("holds a new question while dictating, even when the composer lost focus", () => {
+    const state = updateComposerTypingGuard(createComposerTypingGuardState(), {
+      type: "requests",
+      requestIds: ["question"],
+      dictating: true,
+      now: 60_000,
+    });
+    expect([...state.held]).toEqual(["question"]);
+    expect([...updateComposerTypingGuard(state, { type: "idle" }).held]).toEqual([]);
+  });
+
   it.each(["idle", "send", "blur"] as const)(
     "releases on %s and never re-holds the request",
     (type) => {

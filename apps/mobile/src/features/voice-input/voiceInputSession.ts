@@ -1,3 +1,4 @@
+import type { EnvironmentId } from "@t3tools/contracts";
 import {
   VOICE_RECORDING_LIMIT_SECONDS,
   VoiceInputController,
@@ -20,6 +21,8 @@ export type VoiceInputTarget = {
   readonly readDraft: () => VoiceDraftSnapshot | null;
   readonly commitDraft: VoiceInputControllerDependencies["commitDraft"];
   readonly subscribe: () => () => void;
+  /** Set only after the user opts in; audio otherwise never leaves the device. */
+  readonly whisperEnvironmentId?: EnvironmentId | null;
 };
 
 export type VoiceInputSnapshot = {
@@ -113,6 +116,10 @@ export class VoiceInputSession {
 
   get label(): string | null {
     return this.target?.label ?? null;
+  }
+
+  get whisperEnvironmentId(): EnvironmentId | null {
+    return this.target?.whisperEnvironmentId ?? null;
   }
 
   readonly subscribe = (listener: () => void): (() => void) => {

@@ -5,7 +5,11 @@ import {
   updateComposerTypingGuard,
 } from "./composerTypingGuard";
 
-export function useComposerTypingGuard(scope: string, requestIds: readonly string[]) {
+export function useComposerTypingGuard(
+  scope: string,
+  requestIds: readonly string[],
+  dictating: boolean,
+) {
   const requestsKey = JSON.stringify(requestIds);
   const [snapshot, setSnapshot] = useState(() => ({
     scope,
@@ -13,6 +17,7 @@ export function useComposerTypingGuard(scope: string, requestIds: readonly strin
     state: updateComposerTypingGuard(createComposerTypingGuardState(), {
       type: "requests",
       requestIds,
+      dictating,
       now: Date.now(),
     }),
   }));
@@ -25,7 +30,7 @@ export function useComposerTypingGuard(scope: string, requestIds: readonly strin
         current.scope === scope
           ? current.state
           : { ...createComposerTypingGuardState(), focused: current.state.focused },
-        { type: "requests", requestIds, now: Date.now() },
+        { type: "requests", requestIds, dictating, now: Date.now() },
       ),
     }));
   }
@@ -37,16 +42,19 @@ export function useComposerTypingGuard(scope: string, requestIds: readonly strin
   };
   const onDraftChange = () => dispatch({ type: "type", now: Date.now() });
   const onFocus = () => dispatch({ type: "focus" });
-  const onBlur = () => dispatch({ type: "blur" });
+  // Blur releases held questions, which would replace the draft being dictated.
+  const onBlur = () => {
+    if (!dictating) dispatch({ type: "blur" });
+  };
   const onSend = () => dispatch({ type: "send" });
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- schedules a timer that releases held requests once typing has been idle long enough
   useEffect(() => {
-    if (state.held.size === 0) return;
+    if (state.held.size === 0 || dictating) return;
     const timeout = window.setTimeout(
       () => dispatch({ type: "idle" }),
       Math.max(0, state.lastTypedAt + COMPOSER_TYPING_IDLE_MS - Date.now()),
     );
     return () => window.clearTimeout(timeout);
-  }, [state.held, state.lastTypedAt, dispatch]);
+  }, [state.held, state.lastTypedAt, dictating, dispatch]);
   return { heldRequestIds: state.held, onDraftChange, onFocus, onBlur, onSend };
 }

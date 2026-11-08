@@ -49,7 +49,7 @@ function DictationButton(props: {
 export function ComposerDictationControl(props: {
   readonly phase: VoiceInputPhase;
   readonly environmentLabel: string;
-  readonly unsupportedReason: string | null;
+  readonly disabledReason: string | null;
   readonly shortcutLabel: string | null;
   readonly onStart: () => void;
   readonly onStop: () => void;
@@ -57,7 +57,7 @@ export function ComposerDictationControl(props: {
 }) {
   if (props.phase === "idle" || props.phase === "error") {
     const label =
-      props.unsupportedReason ??
+      props.disabledReason ??
       `Dictate, transcribed on ${props.environmentLabel}${
         props.shortcutLabel ? ` (${props.shortcutLabel})` : ""
       }`;
@@ -65,7 +65,7 @@ export function ComposerDictationControl(props: {
       <DictationButton
         label={label}
         onClick={props.onStart}
-        disabled={props.unsupportedReason !== null}
+        disabled={props.disabledReason !== null}
       >
         <MicIcon />
       </DictationButton>

@@ -1849,34 +1849,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const dictationUnsupportedReason = browserSupportsDictation()
     ? null
     : "Dictation needs HTTPS or localhost";
-  const dictation = useComposerDictation({
-    environmentId,
-    ownerKey: attachmentTargetKey,
-    readDraft: () => {
-      const end = promptRef.current.length;
-      return {
-        text: promptRef.current,
-        selection: composerEditorRef.current?.readSelectionRange() ?? { start: end, end },
-      };
-    },
-    commitDraft: (text, selection) => {
-      // Transcribing can take minutes; don't pull focus back if the user has moved on.
-      const active = document.activeElement;
-      const focusedElsewhere =
-        active !== null && active !== document.body && !composerFormRef.current?.contains(active);
-      applyPromptReplacementStable(0, promptRef.current.length, text, {
-        expandedCursorAfterReplace: selection.end,
-        focusEditorAfterReplace: !focusedElsewhere,
-      });
-    },
-    onStateChange: setDictationState,
-  });
-  const toggleDictationStable = useStableCallback(() => {
-    if (isDictating || (dictationAvailable && dictationUnsupportedReason === null)) {
-      dictation.toggle();
-    }
-  });
-
   const readComposerSnapshot = (): {
     value: string;
     cursor: number;
@@ -1939,6 +1911,35 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       window.requestAnimationFrame(() => composerEditorRef.current?.focusAt(cursor));
     },
   });
+  const dictation = useComposerDictation({
+    environmentId,
+    ownerKey: attachmentTargetKey,
+    otherVoiceInputActive: speechInput.blocksSubmission,
+    readDraft: () => {
+      const end = promptRef.current.length;
+      return {
+        text: promptRef.current,
+        selection: composerEditorRef.current?.readSelectionRange() ?? { start: end, end },
+      };
+    },
+    commitDraft: (text, selection) => {
+      // Transcribing can take minutes; don't pull focus back if the user has moved on.
+      const active = document.activeElement;
+      const focusedElsewhere =
+        active !== null && active !== document.body && !composerFormRef.current?.contains(active);
+      applyPromptReplacementStable(0, promptRef.current.length, text, {
+        expandedCursorAfterReplace: selection.end,
+        focusEditorAfterReplace: !focusedElsewhere,
+      });
+    },
+    onStateChange: setDictationState,
+  });
+  const toggleDictationStable = useStableCallback(() => {
+    if (isDictating || (dictationAvailable && dictationUnsupportedReason === null)) {
+      dictation.toggle();
+    }
+  });
+
   const { blocksSubmission: voiceInputActive, submitAfterDictation } = speechInput;
   const voiceSendDisabledReason =
     sendDisabledReason ?? (speechInput.preparing ? "Preparing voice input" : null);
@@ -3690,7 +3691,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     <ComposerDictationControl
                       phase={dictationState.phase}
                       environmentLabel={dictationEnvironment?.label ?? "this environment"}
-                      unsupportedReason={dictationUnsupportedReason}
+                      disabledReason={
+                        dictationUnsupportedReason ??
+                        (speechInput.blocksSubmission
+                          ? "Finish the current voice input first"
+                          : null)
+                      }
                       shortcutLabel={shortcutLabelForCommand(keybindings, "composer.dictate")}
                       onStart={dictation.start}
                       onStop={dictation.stop}

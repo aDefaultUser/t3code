@@ -18,6 +18,8 @@ type Selection = { readonly start: number; readonly end: number };
 type ComposerDictationInput = {
   readonly environmentId: EnvironmentId;
   readonly ownerKey: string;
+  /** Environment speech input shares the one microphone session, so it must finish first. */
+  readonly otherVoiceInputActive: boolean;
   readonly readDraft: () => { readonly text: string; readonly selection: Selection } | null;
   readonly commitDraft: (text: string, selection: Selection) => void;
   readonly onStateChange: (state: VoiceInputState) => void;
@@ -76,14 +78,17 @@ export function useComposerDictation(input: ComposerDictationInput) {
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- the microphone and any running transcription must not outlive the composer
   useEffect(() => () => controller.dispose(), [controller]);
 
+  const start = () => {
+    if (!input.otherVoiceInputActive) void controller.start();
+  };
   return {
-    start: () => void controller.start(),
+    start,
     stop: () => void controller.stop(),
     cancel: () => controller.cancel(),
     toggle: () => {
       const { phase } = controller.currentState;
       if (phase === "recording") void controller.stop();
-      else if (phase === "idle" || phase === "error") void controller.start();
+      else if (phase === "idle" || phase === "error") start();
     },
   };
 }
